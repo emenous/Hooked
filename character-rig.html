@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hooked Character Rig</title>
+    <link rel="stylesheet" href="./src/rig.css" />
+  </head>
+  <body>
+    <main id="rig-shell">
+      <header id="rig-header">
+        <div>
+          <a href="./index.html">Back to game</a>
+          <h1>Character Rig</h1>
+        </div>
+        <div id="rig-actions">
+          <button id="toggle-markers" type="button">Hide joints</button>
+          <button id="reset-rig" type="button">Reset</button>
+          <button id="save-rig" type="button">Save</button>
+          <button id="export-rig" type="button">Export</button>
+          <button id="import-rig" type="button">Import</button>
+        </div>
+      </header>
+
+      <section id="rig-workspace">
+        <aside id="parts-panel" aria-label="Rig parts">
+          <label>
+            <span>Part</span>
+            <select id="part-select"></select>
+          </label>
+          <div id="layer-controls" aria-label="Layer controls">
+            <button id="send-back" type="button">Send back</button>
+            <button id="move-back" type="button">Back</button>
+            <button id="move-forward" type="button">Forward</button>
+            <button id="send-front" type="button">Send front</button>
+          </div>
+          <div id="group-controls" aria-label="Group controls">
+            <button id="select-all" type="button">Select all</button>
+            <button id="clear-selection" type="button">Clear</button>
+            <button id="group-selection" type="button">Group selected</button>
+            <button id="ungroup-selection" type="button">Ungroup</button>
+          </div>
+          <div id="selection-summary" aria-live="polite">1 selected</div>
+          <div id="groups-list" aria-label="Groups"></div>
+          <ol id="layer-list" aria-label="Layer order"></ol>
+          <fieldset id="animation-tools" aria-label="Animation tools">
+            <legend>Animation</legend>
+            <select id="pose-select"></select>
+            <button id="save-pose" type="button">Save pose</button>
+            <button id="delete-pose" type="button">Delete pose</button>
+            <button id="play-preview" type="button">Play</button>
+          </fieldset>
+          <div id="part-controls"></div>
+          <textarea id="rig-output" readonly spellcheck="false" aria-label="Rig export"></textarea>
+        </aside>
+
+        <section id="stage-wrap" aria-label="Rig stage">
+          <svg id="rig-stage" viewBox="-220 -260 440 560" role="img" aria-label="Character rig preview">
+            <defs>
+              <pattern id="grid" width="16" height="16" patternUnits="userSpaceOnUse">
+                <path d="M 16 0 L 0 0 0 16" fill="none" stroke="rgba(188,231,216,0.08)" stroke-width="1" />
+              </pattern>
+            </defs>
+            <rect x="-220" y="-260" width="440" height="560" fill="url(#grid)" />
+            <line x1="-220" y1="0" x2="220" y2="0" class="axis" />
+            <line x1="0" y1="-260" x2="0" y2="300" class="axis" />
+            <g id="rig-parts"></g>
+            <g id="selection-box">
+              <rect id="selection-rect" x="0" y="0" width="0" height="0" />
+              <circle class="resize-handle" data-handle="nw" r="5" />
+              <circle class="resize-handle" data-handle="ne" r="5" />
+              <circle class="resize-handle" data-handle="se" r="5" />
+              <circle class="resize-handle" data-handle="sw" r="5" />
+              <circle id="rotate-handle" r="6" />
+            </g>
+            <rect id="marquee-box" x="0" y="0" width="0" height="0" />
+          </svg>
+          <aside id="preview-panel" aria-label="Animation preview">
+            <h2>Preview</h2>
+            <svg id="preview-stage" viewBox="-180 -230 360 460" role="img" aria-label="Animation preview">
+              <rect x="-180" y="-230" width="360" height="460" />
+              <g id="preview-parts"></g>
+            </svg>
+          </aside>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="./src/rig.js?v=rig-workspace-v6"></script>
+  </body>
+</html>

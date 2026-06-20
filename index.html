@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hooked Prototype</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main id="game-shell">
+      <canvas id="game"></canvas>
+      <section id="hud" aria-label="Game status">
+        <div>
+          <span class="label">Score</span>
+          <strong id="score">0</strong>
+        </div>
+        <div>
+          <span class="label">Speed</span>
+          <strong id="speed">0</strong>
+        </div>
+        <div>
+          <span class="label">Rope</span>
+          <strong id="rope">Ready</strong>
+        </div>
+        <div>
+          <span class="label">Flourish</span>
+          <strong id="flourish">Low</strong>
+        </div>
+        <div>
+          <span class="label">Fails</span>
+          <strong id="fail-count">0</strong>
+        </div>
+        <div id="slomo-timer" class="hidden">
+          <span class="label">Slo-mo</span>
+          <strong><span class="timer-icon" aria-hidden="true"></span><span id="slomo-time">0.0s</span></strong>
+        </div>
+      </section>
+      <section id="status-center" aria-label="Run status">
+        <div id="multiplier-pill" class="hidden">
+          <span class="status-icon" aria-hidden="true">x</span>
+          <strong id="multiplier-count">1.0</strong>
+        </div>
+        <div id="center-slomo-timer" class="hidden">
+          <span class="timer-icon" aria-hidden="true"></span>
+          <strong id="center-slomo-time">0.0s</strong>
+        </div>
+      </section>
+      <section id="controls" aria-label="Controls">
+        <kbd>Space / L Click</kbd><span>Hop / grapple</span>
+        <kbd>Release</kbd><span>Pop off</span>
+        <kbd>V / R Click</kbd><span>Flourish</span>
+        <kbd>Drag</kbd><span>Move objects</span>
+        <kbd>Wheel</kbd><span>Zoom build view</span>
+      </section>
+      <button id="flourish-button" type="button" aria-label="Flourish">Flip</button>
+      <section id="editor" aria-label="Editor tools">
+        <span>Build mode</span>
+        <button id="toggle-pause" type="button">Pause</button>
+        <div id="build-tools" class="hidden">
+          <label>
+            <span>Object</span>
+            <select id="object-type">
+              <option value="anchor">Anchor</option>
+              <option value="slowmo">Slow Ring</option>
+              <option value="hazard">Obstacle</option>
+              <option value="bonus">Score Ring</option>
+              <option value="finish">Finish</option>
+            </select>
+          </label>
+          <button id="add-object" type="button">Add</button>
+          <button id="remove-object" type="button">Remove</button>
+          <label class="zoom-control">
+            <span>Zoom</span>
+            <button id="zoom-out" type="button" aria-label="Zoom out">-</button>
+            <input id="build-zoom" type="range" min="18" max="640" step="1" value="25" aria-label="Build view zoom" />
+            <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+          </label>
+          <button id="zoom-fit" type="button">Birds eye</button>
+          <fieldset id="character-tools" aria-label="Character editor">
+            <legend>Character</legend>
+            <label>
+              <span>Scale</span>
+              <input id="character-scale" type="range" min="0.72" max="1.35" step="0.01" value="1" />
+            </label>
+            <label>
+              <span>Torso</span>
+              <input id="character-torso" type="range" min="0.82" max="1.28" step="0.01" value="1" />
+            </label>
+            <label>
+              <span>Head</span>
+              <input id="character-head" type="range" min="0.78" max="1.24" step="0.01" value="1" />
+            </label>
+            <label>
+              <span>Limbs</span>
+              <input id="character-limbs" type="range" min="0.82" max="1.24" step="0.01" value="1" />
+            </label>
+            <label>
+              <span>Ribbon</span>
+              <input id="character-ribbon" type="range" min="0.55" max="1.35" step="0.01" value="0.95" />
+            </label>
+            <a class="tool-link" href="./character-rig.html">Open rig editor</a>
+            <button id="character-reset" type="button">Reset character</button>
+          </fieldset>
+          <button id="reset-anchors" type="button">Reset layout</button>
+        </div>
+      </section>
+      <section id="level-complete" class="hidden" aria-label="Level complete">
+        <div id="jeremy-fireworks" aria-hidden="true"></div>
+        <p class="result-kicker">Level Complete</p>
+        <p class="jeremy-callout">HEY JEREMY!!!!</p>
+        <h1>Level Complete</h1>
+        <dl>
+          <div>
+            <dt>Death Counter</dt>
+            <dd id="complete-deaths">0</dd>
+          </div>
+          <div>
+            <dt>Highest Multiplier Achieved</dt>
+            <dd id="complete-multiplier">1x</dd>
+          </div>
+          <div>
+            <dt>Score</dt>
+            <dd id="complete-score">0</dd>
+          </div>
+          <div>
+            <dt>Score Rank</dt>
+            <dd id="complete-rank">D</dd>
+          </div>
+        </dl>
+        <button id="next-level" type="button">Next Level</button>
+      </section>
+      <p id="game-version" aria-label="Current version"></p>
+      <button id="restart" type="button">Restart</button>
+    </main>
+
+    <script type="module" src="./src/main.js?v=version-fireworks-v1"></script>
+  </body>
+</html>
