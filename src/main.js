@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.30";
+const GAME_VERSION = "v0.5.31";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -95,9 +95,13 @@ const config = {
   platformJumpLift: 7.6,
   cameraLead: 3,
   cameraVerticalLead: 0.5,
+  cameraMinZoom: 10,
   cameraBaseZoom: 18,
   cameraSpeedZoom: 0.58,
   cameraMaxZoom: 40,
+  cameraWheelZoomSpeed: 0.035,
+  cameraManualZoomMin: -8,
+  cameraManualZoomMax: 18,
   restartDelay: 0.55,
   buildPanSpeed: 0.018,
   buildZoomSpeed: 0.028,
@@ -241,6 +245,9 @@ const state = {
   draggedObject: null,
   selectedObject: null,
   panningCamera: false,
+  inspectFrozen: false,
+  inspectFrozenAt: 0,
+  cameraZoomOffset: 0,
   pointerWorld: new THREE.Vector3(),
   panStartWorld: new THREE.Vector3(),
   panStartCamera: new THREE.Vector3(),
@@ -3533,6 +3540,11 @@ function startPointerControl(event) {
 }
 
 function stopPointerControl(event) {
+  if (state.inspectFrozen) {
+    event.preventDefault();
+    return;
+  }
+
   if (state.paused || state.draggedObject || state.panningCamera) {
     stopEditorDrag(event);
     return;
@@ -3550,9 +3562,23 @@ function stopPointerControl(event) {
 }
 
 function scrollBuildView(event) {
-  if (!state.paused) return;
-
   event.preventDefault();
+  if (!state.paused) {
+    const zoomDelta = event.deltaY * config.cameraWheelZoomSpeed;
+    state.cameraZoomOffset = THREE.MathUtils.clamp(
+      state.cameraZoomOffset + zoomDelta,
+      config.cameraManualZoomMin,
+      config.cameraManualZoomMax,
+    );
+    camera.position.z = THREE.MathUtils.clamp(
+      camera.position.z + zoomDelta,
+      config.cameraMinZoom,
+      config.cameraMaxZoom + config.cameraManualZoomMax,
+    );
+    camera.lookAt(camera.position.x, camera.position.y, 0);
+    return;
+  }
+
   if (event.shiftKey) {
     camera.position.y = THREE.MathUtils.clamp(
       camera.position.y - event.deltaY * config.buildPanSpeed,
@@ -3728,6 +3754,17 @@ function setPaused(paused) {
     state.draggedObject = null;
   }
   syncEditorPane();
+}
+
+function setInspectFrozen(frozen, now = performance.now() / 1000) {
+  state.inspectFrozen = frozen;
+  if (frozen) {
+    state.inspectFrozenAt = now;
+    physicsAccumulator = 0;
+    state.keys.delete("Space");
+    state.spaceDownAt = -100;
+    state.spaceIsDown = false;
+  }
 }
 
 function applyBuildVisualMode(enabled) {
@@ -4851,9 +4888,10 @@ function updateCamera(dt) {
   const targetZ = THREE.MathUtils.clamp(
     config.cameraBaseZoom
       + speedZoom * (config.cameraMaxZoom - config.cameraBaseZoom) * config.cameraSpeedZoom
-      + lowAltitudeZoom * 10,
-    config.cameraBaseZoom,
-    config.cameraMaxZoom,
+      + lowAltitudeZoom * 10
+      + state.cameraZoomOffset,
+    config.cameraMinZoom,
+    config.cameraMaxZoom + config.cameraManualZoomMax,
   );
   camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetX, 1 - Math.pow(0.001, dt));
   camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetY, 1 - Math.pow(0.004, dt));
@@ -5113,11 +5151,14 @@ function stepGameplay(dt, now) {
 }
 
 function tick(time) {
-  const now = time / 1000;
-  const frameDt = Math.min((time - last) / 1000, config.maxPhysicsFrame) * debugSettings.timeScale;
+  const liveNow = time / 1000;
+  const now = state.inspectFrozen ? state.inspectFrozenAt : liveNow;
+  const frameDt = state.inspectFrozen
+    ? 0
+    : Math.min((time - last) / 1000, config.maxPhysicsFrame) * debugSettings.timeScale;
   last = time;
 
-  if (state.draggedObject || state.paused) {
+  if (state.draggedObject || state.paused || state.inspectFrozen) {
     physicsAccumulator = 0;
   } else {
     physicsAccumulator = Math.min(physicsAccumulator + frameDt, config.maxPhysicsFrame);
@@ -5191,6 +5232,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.code === "KeyV") queueFlourish(performance.now() / 1000);
   if (event.code === "KeyR") reset();
+  if (event.code === "KeyI") setInspectFrozen(!state.inspectFrozen, performance.now() / 1000);
   if (event.code === "KeyP") setPaused(!state.paused);
   if (event.code === "KeyG") {
     config.debugGlbNeutralOnly = !config.debugGlbNeutralOnly;
@@ -5201,6 +5243,10 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("keyup", (event) => {
   state.keys.delete(event.code);
+  if (state.inspectFrozen && event.code === "Space") {
+    event.preventDefault();
+    return;
+  }
   if (event.code === "Space") {
     const hadAnchor = state.spaceHadAnchor || state.grappled;
     releaseGrapple({ pop: hadAnchor });
