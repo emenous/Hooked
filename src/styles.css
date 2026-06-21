@@ -446,16 +446,17 @@ kbd {
   position: absolute;
   left: 50%;
   bottom: 13px;
-  z-index: 4;
+  z-index: 12;
   margin: 0;
   padding: 5px 10px;
   border: 1px solid rgba(188, 231, 216, 0.16);
   border-radius: 999px;
   background: rgba(5, 12, 12, 0.46);
-  color: rgba(247, 255, 248, 0.72);
+  color: #ffffff;
   font-size: 11px;
   font-weight: 850;
   line-height: 1;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
   transform: translateX(-50%);
   pointer-events: none;
 }

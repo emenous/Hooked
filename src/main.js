@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.26";
+const GAME_VERSION = "v0.5.27";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
