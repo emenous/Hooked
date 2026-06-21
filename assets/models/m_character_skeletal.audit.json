@@ -16,7 +16,12 @@
         "samplers": 60
       }
     ],
-    "skinnedPrimitives": "21/21"
+    "skinnedPrimitives": "21/21",
+    "meshPositionSpan": {
+      "x": 0.3331630229949951,
+      "y": 1.8959109783172607,
+      "z": 0.6324030160903931
+    }
   },
   "joints": [
     "M_root",

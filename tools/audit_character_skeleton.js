@@ -87,6 +87,7 @@ function audit(filePath) {
   const gltf = readGlbJson(filePath);
   const nodes = gltf.nodes ?? [];
   const meshes = gltf.meshes ?? [];
+  const accessors = gltf.accessors ?? [];
   const skins = gltf.skins ?? [];
   const animations = gltf.animations ?? [];
   const names = indexByName(nodes);
@@ -130,16 +131,33 @@ function audit(filePath) {
 
   let primitiveCount = 0;
   let skinnedPrimitiveCount = 0;
+  const positionMin = [Infinity, Infinity, Infinity];
+  const positionMax = [-Infinity, -Infinity, -Infinity];
   meshes.forEach((mesh) => {
     for (const primitive of mesh.primitives ?? []) {
       primitiveCount += 1;
       if (primitive.attributes?.JOINTS_0 !== undefined && primitive.attributes?.WEIGHTS_0 !== undefined) {
         skinnedPrimitiveCount += 1;
       }
+      const positionAccessor = accessors[primitive.attributes?.POSITION];
+      if (positionAccessor?.min && positionAccessor?.max) {
+        for (let axis = 0; axis < 3; axis += 1) {
+          positionMin[axis] = Math.min(positionMin[axis], positionAccessor.min[axis]);
+          positionMax[axis] = Math.max(positionMax[axis], positionAccessor.max[axis]);
+        }
+      }
     }
   });
   if (primitiveCount !== skinnedPrimitiveCount) {
     failures.push(`Skinned primitives ${skinnedPrimitiveCount}/${primitiveCount}`);
+  }
+
+  const positionSpan = positionMax.map((value, axis) => value - positionMin[axis]);
+  const majorAxis = positionSpan.indexOf(Math.max(...positionSpan));
+  if (majorAxis !== 1) {
+    failures.push(
+      `Mesh basis is not game-ready: tallest axis should be Y, found ${["X", "Y", "Z"][majorAxis]} span ${JSON.stringify(positionSpan)}`,
+    );
   }
 
   return {
@@ -159,6 +177,11 @@ function audit(filePath) {
         samplers: animation.samplers?.length ?? 0,
       })),
       skinnedPrimitives: `${skinnedPrimitiveCount}/${primitiveCount}`,
+      meshPositionSpan: {
+        x: positionSpan[0],
+        y: positionSpan[1],
+        z: positionSpan[2],
+      },
     },
     joints: jointNames,
   };

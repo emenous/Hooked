@@ -1,5 +1,6 @@
 .DS_Store
 .last-deploy-watch
 *.blend1
+assets/models/hyper3d-new/sling_hyper3d_new_game_ready.blend
 server.out.log
 server.err.log

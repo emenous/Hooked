@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.31";
+const GAME_VERSION = "v0.5.32";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -163,7 +163,6 @@ const config = {
 };
 
 const characterVisualScale = 1;
-const glbModelBasisRotationX = -Math.PI / 2;
 const ribbonLengthScale = 0.95;
 
 const pixelateSettingsStorageKey = "hooked.pixelate.settings.v1";
@@ -1693,7 +1692,7 @@ function loadGlbCharacter() {
     (gltf) => {
       const model = gltf.scene;
       model.name = "M Blender character";
-      model.rotation.set(glbModelBasisRotationX, 0, 0);
+      model.rotation.set(0, 0, 0);
       model.position.set(0, 0, 0);
       model.renderOrder = 36;
       glbCharacter.pivots = {};

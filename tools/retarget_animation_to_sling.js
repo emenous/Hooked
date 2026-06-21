@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const blenderPath = "C:/Program Files/Blender Foundation/Blender 4.2/blender.exe";
-const slingBlend = "assets/models/hyper3d-new/sling_hyper3d_new_skeletal.blend";
+const slingBlend = "assets/models/hyper3d-new/sling_hyper3d_new_game_ready.blend";
 const outputDir = "assets/animations/retargeted";
 
 const sourcePath = process.argv[2];
@@ -36,7 +36,7 @@ OUTPUT_PATH = ${JSON.stringify(path.resolve(outputPath))}
 REPORT_PATH = ${JSON.stringify(path.resolve(reportPath))}
 
 TARGET_ARMATURE = "Sling_Armature"
-EXPORT_COLLECTION = "SKELETAL_EXPORT"
+EXPORT_COLLECTION = "GAME_READY_EXPORT"
 
 TARGET_TO_SOURCE = {
     "M_root": ["Hips", "Root", "Armature", "mixamorig:Hips"],
