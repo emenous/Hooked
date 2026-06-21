@@ -76,3 +76,33 @@ This is an animation-capable skeleton, but it is not a direct Mixamo/Unity human
 - `right_ankle_pivot`
 
 If the diagnostic clip bends a part the wrong way, fix the bone rest axis or source pivot in Blender before trying imported animation clips.
+
+## Retargeting Premade Animation Clips
+
+Drop source animation files into:
+
+`assets/animations/inbox/`
+
+Then run:
+
+```bash
+node tools/retarget_animation_to_sling.js assets/animations/inbox/YOUR_ANIMATION.fbx
+```
+
+Generated Sling-compatible clips are written to:
+
+`assets/animations/retargeted/`
+
+This first-pass retargeter supports common humanoid/Mixamo bone names. It copies source local bone rotations onto Sling's custom bones and writes a report beside the output GLB.
+
+If a converted clip has elbows/knees bending backward, the skeleton is still usable, but that source clip needs either:
+
+- a per-bone axis correction in `tools/retarget_animation_to_sling.js`, or
+- manual cleanup in Blender before export.
+
+The long-term goal is:
+
+1. Download/drop animation into `assets/animations/inbox/`.
+2. Retarget it onto Sling.
+3. Audit/preview the output GLB.
+4. Load the converted Sling clip in the game.
