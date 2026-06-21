@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.27";
+const GAME_VERSION = "v0.5.28";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -150,7 +150,7 @@ const config = {
   debugShowDroneAnchors: false,
   debugGlbNeutralOnly: false,
   useGlbCharacter: true,
-  glbCharacterPath: "./assets/models/m_character.glb",
+  glbCharacterPath: "./assets/models/m_character_skeletal.glb",
   freezeGlbCharacterPose: false,
   useRestRelativeGlbPose: true,
   glbPoseSmoothing: 18,
@@ -1198,6 +1198,8 @@ const glbCharacter = {
   group: null,
   leftWristAnchor: null,
   ribbonAnchor: null,
+  skinnedMeshCount: 0,
+  animationClipNames: [],
   pivots: {},
   debugMarkers: [],
 };
@@ -1690,15 +1692,23 @@ function loadGlbCharacter() {
       glbCharacter.leftWristAnchor = null;
       glbCharacter.ribbonAnchor = null;
       glbCharacter.debugMarkers = [];
+      glbCharacter.skinnedMeshCount = 0;
+      glbCharacter.animationClipNames = gltf.animations.map((clip) => clip.name || "(unnamed)");
       model.traverse((child) => {
         child.frustumCulled = false;
         child.renderOrder = 36;
+        if (child.isSkinnedMesh) {
+          glbCharacter.skinnedMeshCount += 1;
+        }
         if (child.material) {
-          child.material.transparent = true;
-          child.material.opacity = 1;
-          child.material.depthTest = false;
-          child.material.depthWrite = false;
-          child.material.needsUpdate = true;
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          for (const material of materials) {
+            material.transparent = true;
+            material.opacity = 1;
+            material.depthTest = false;
+            material.depthWrite = false;
+            material.needsUpdate = true;
+          }
         }
         if (child.name === "left_wrist_anchor") glbCharacter.leftWristAnchor = child;
         if (child.name === "ribbon_anchor") glbCharacter.ribbonAnchor = child;
@@ -1723,6 +1733,11 @@ function loadGlbCharacter() {
       glbCharacter.group = model;
       syncGlbCharacterTransform();
       syncCharacterSourceVisibility();
+      console.info("Hooked GLB character loaded", {
+        path: config.glbCharacterPath,
+        skinnedMeshes: glbCharacter.skinnedMeshCount,
+        animations: glbCharacter.animationClipNames,
+      });
     },
     undefined,
     () => {

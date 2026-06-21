@@ -1,4 +1,5 @@
 .DS_Store
 .last-deploy-watch
+*.blend1
 server.out.log
 server.err.log

@@ -1,0 +1,43 @@
+{
+  "file": "assets\\models\\m_character_skeletal.glb",
+  "ok": true,
+  "failures": [],
+  "warnings": [],
+  "summary": {
+    "nodes": 40,
+    "meshes": 19,
+    "meshNodes": 19,
+    "skins": 1,
+    "joints": 20,
+    "animations": [
+      {
+        "name": "Sling_rig_test",
+        "channels": 60,
+        "samplers": 60
+      }
+    ],
+    "skinnedPrimitives": "21/21"
+  },
+  "joints": [
+    "M_root",
+    "pelvis_pivot",
+    "waist_pivot",
+    "chest_pivot",
+    "neck_pivot",
+    "head_pivot",
+    "ribbon_anchor",
+    "left_shoulder_pivot",
+    "left_elbow_pivot",
+    "left_wrist_pivot",
+    "left_wrist_anchor",
+    "right_shoulder_pivot",
+    "right_elbow_pivot",
+    "right_wrist_pivot",
+    "left_hip_pivot",
+    "left_knee_pivot",
+    "left_ankle_pivot",
+    "right_hip_pivot",
+    "right_knee_pivot",
+    "right_ankle_pivot"
+  ]
+}

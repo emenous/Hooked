@@ -2,6 +2,7 @@ const cp = require("child_process");
 
 const code = String.raw`
 import bpy
+from math import radians
 from mathutils import Vector
 
 OUT_BLEND = r"C:/Users/emeno/OneDrive/Documents/Hooked/assets/models/hyper3d-new/sling_hyper3d_new_skeletal.blend"
@@ -137,6 +138,58 @@ for bone_name, parent_name in BONE_PARENT.items():
 bpy.ops.object.mode_set(mode="OBJECT")
 arm_data.display_type = "STICK"
 arm_obj.show_in_front = True
+
+bpy.context.scene.frame_start = 1
+bpy.context.scene.frame_end = 72
+bpy.context.scene.render.fps = 30
+
+for pose_bone in arm_obj.pose.bones:
+    pose_bone.rotation_mode = "XYZ"
+
+arm_obj.animation_data_create()
+test_action = bpy.data.actions.new("Sling_rig_test")
+arm_obj.animation_data.action = test_action
+
+def key_rig_pose(frame, rotations):
+    bpy.context.scene.frame_set(frame)
+    for pose_bone in arm_obj.pose.bones:
+        pose_bone.rotation_euler = (0, 0, 0)
+        pose_bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+    for bone_name, angle_degrees in rotations.items():
+        pose_bone = arm_obj.pose.bones.get(bone_name)
+        if pose_bone:
+            pose_bone.rotation_euler[2] = radians(angle_degrees)
+            pose_bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+
+key_rig_pose(1, {})
+key_rig_pose(18, {
+    "left_shoulder_pivot": -38,
+    "left_elbow_pivot": -8,
+    "left_wrist_pivot": 6,
+    "right_shoulder_pivot": 20,
+    "right_elbow_pivot": -32,
+    "left_hip_pivot": 18,
+    "left_knee_pivot": -38,
+    "left_ankle_pivot": 10,
+    "right_hip_pivot": -12,
+    "right_knee_pivot": -24,
+    "right_ankle_pivot": 8,
+})
+key_rig_pose(36, {})
+key_rig_pose(54, {
+    "left_shoulder_pivot": 26,
+    "left_elbow_pivot": -22,
+    "right_shoulder_pivot": -34,
+    "right_elbow_pivot": -8,
+    "left_hip_pivot": -16,
+    "left_knee_pivot": -24,
+    "right_hip_pivot": 20,
+    "right_knee_pivot": -38,
+    "waist_pivot": -7,
+    "chest_pivot": 9,
+    "head_pivot": -6,
+})
+key_rig_pose(72, {})
 
 for mesh_name, bone_name in FINAL_MESHES.items():
     src = source_objects[mesh_name]
