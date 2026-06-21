@@ -1,6 +1,10 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
+import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
+import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
+import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.4.1";
+const GAME_VERSION = "v0.5.21";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -19,7 +23,10 @@ const restartButton = document.querySelector("#restart");
 const flourishButton = document.querySelector("#flourish-button");
 const resetAnchorsButton = document.querySelector("#reset-anchors");
 const togglePauseButton = document.querySelector("#toggle-pause");
+const editorPanel = document.querySelector("#editor");
+const editorPane = document.querySelector("#editor-pane");
 const buildTools = document.querySelector("#build-tools");
+const levelSelect = document.querySelector("#level-select");
 const objectTypeSelect = document.querySelector("#object-type");
 const addObjectButton = document.querySelector("#add-object");
 const removeObjectButton = document.querySelector("#remove-object");
@@ -27,6 +34,9 @@ const zoomOutButton = document.querySelector("#zoom-out");
 const zoomInButton = document.querySelector("#zoom-in");
 const zoomFitButton = document.querySelector("#zoom-fit");
 const buildZoomInput = document.querySelector("#build-zoom");
+const pixelateToggleButton = document.querySelector("#pixelate-toggle");
+const pixelateIntensityInput = document.querySelector("#pixelate-intensity");
+const pixelateIntensityValue = document.querySelector("#pixelate-intensity-value");
 const characterScaleInput = document.querySelector("#character-scale");
 const characterTorsoInput = document.querySelector("#character-torso");
 const characterHeadInput = document.querySelector("#character-head");
@@ -43,6 +53,7 @@ const gameVersionEl = document.querySelector("#game-version");
 const jeremyFireworksEl = document.querySelector("#jeremy-fireworks");
 const anchorStorageKey = "hooked.anchor.layout.v5";
 const editorLayoutStorageKey = "hooked.editor.layout.v1";
+const editorLayoutStoragePrefix = "hooked.editor.layout.v2.";
 const characterSettingsStorageKey = "hooked.character.settings.v2";
 
 const config = {
@@ -91,17 +102,17 @@ const config = {
   platformJumpLift: 7.6,
   cameraLead: 3,
   cameraVerticalLead: 0.5,
-  cameraBaseZoom: 25,
-  cameraSpeedZoom: 0.34,
+  cameraBaseZoom: 18,
+  cameraSpeedZoom: 0.58,
   cameraMaxZoom: 40,
   restartDelay: 0.55,
   buildPanSpeed: 0.018,
-  buildZoomSpeed: 0.018,
-  buildMinZoom: 18,
-  buildMaxZoom: 640,
+  buildZoomSpeed: 0.028,
+  buildMinZoom: 6,
+  buildMaxZoom: 1200,
   buildMinY: -40,
   buildMaxY: 50,
-  buildZoomStep: 12,
+  buildZoomStep: 8,
   buildViewPadding: 8,
   speedLineMinSpeed: 6,
   speedLineMaxSpeed: 36,
@@ -120,6 +131,9 @@ const config = {
   ropeCrackleDuration: 0.12,
   ropeCracklePoints: 14,
   ropeCrackleJitter: 0.16,
+  anchorPlasmaSparkChance: 26,
+  droneMalfunctionChance: 0.1,
+  droneMalfunctionSparkChance: 18,
   ribbonSpring: 34,
   ribbonDamping: 0.82,
   ribbonWind: 0.08,
@@ -141,7 +155,22 @@ const config = {
   crashExplosionDuration: 0.92,
   foregroundBlurScale: 1,
   debugShowDroneAnchors: false,
+  debugGlbNeutralOnly: false,
+  useGlbCharacter: true,
+  glbCharacterPath: "./assets/models/m_character.glb",
+  freezeGlbCharacterPose: false,
+  useRestRelativeGlbPose: true,
   useSvgCharacter: false,
+  svgCharacterOverlay: false,
+  svgCharacterUseRigData: true,
+  hidePlaceholderWithSvgOverlay: false,
+  svgRigScale: 0.012,
+  svgRigTargetHeight: 2.32,
+  svgOverlayAutoFit: false,
+  svgOverlayTargetHeightScale: 1.05,
+  svgSwingRotationMax: 0.72,
+  pixelateEnabled: false,
+  pixelateIntensity: 0.45,
 };
 
 const defaultCharacterSettings = {
@@ -153,6 +182,33 @@ const defaultCharacterSettings = {
 };
 
 const characterSettings = { ...defaultCharacterSettings };
+
+const pixelateSettingsStorageKey = "hooked.pixelate.settings.v1";
+const pixelateSettings = {
+  enabled: config.pixelateEnabled,
+  intensity: config.pixelateIntensity,
+};
+
+const levelSelectionStorageKey = "hooked.current.level.v1";
+let currentLevelId = localStorage.getItem(levelSelectionStorageKey) || "skyline";
+
+const editorUi = {
+  paused: false,
+  level: currentLevelId,
+  objectType: objectTypeSelect?.value ?? "anchor",
+  zoom: config.cameraBaseZoom,
+  pixelate: pixelateSettings.enabled,
+  pixelateIntensity: pixelateSettings.intensity,
+  characterScale: characterSettings.scale,
+  characterTorso: characterSettings.torso,
+  characterHead: characterSettings.head,
+  characterLimbs: characterSettings.limbs,
+  characterRibbon: characterSettings.ribbon,
+};
+
+let tweakPane = null;
+let syncingEditorPane = false;
+const tweakPaneBindings = [];
 
 const state = {
   keys: new Set(),
@@ -254,7 +310,8 @@ function bindGameButton(button, action) {
 }
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x21172c, 46, 108);
+const gameplayFog = new THREE.Fog(0x21172c, 46, 108);
+scene.fog = gameplayFog;
 
 const backgroundLayer = new THREE.Group();
 const midgroundLayer = new THREE.Group();
@@ -281,7 +338,7 @@ function addGameplay(object) {
 }
 
 const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 820);
-camera.position.set(0, 0, 26);
+camera.position.set(0, 0, config.cameraBaseZoom);
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -290,6 +347,55 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.setPixelRatio(1);
 renderer.setClearColor(0x21172c, 1);
+
+const PixelateShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    u_resolution: { value: new THREE.Vector2(1, 1) },
+    intensity: { value: config.pixelateIntensity },
+  },
+  vertexShader: [
+    "varying vec2 vUv;",
+    "void main() {",
+    "  vUv = uv;",
+    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+    "}",
+  ].join("\n"),
+  fragmentShader: [
+    "varying vec2 vUv;",
+    "uniform sampler2D tDiffuse;",
+    "uniform vec2 u_resolution;",
+    "uniform float intensity;",
+    "vec3 bg(vec2 uv) {",
+    "  return texture2D(tDiffuse, uv).rgb;",
+    "}",
+    "vec3 effect(vec2 uv, vec3 col) {",
+    "  float granularity = floor(intensity * 20.0 + 10.0);",
+    "  if (mod(granularity, 2.0) > 0.0) {",
+    "    granularity += 1.0;",
+    "  }",
+    "  if (granularity > 0.0) {",
+    "    float dx = granularity / u_resolution.x;",
+    "    float dy = granularity / u_resolution.y;",
+    "    uv = vec2(dx * (floor(uv.x / dx) + 0.5), dy * (floor(uv.y / dy) + 0.5));",
+    "    return bg(uv);",
+    "  }",
+    "  return col;",
+    "}",
+    "void main() {",
+    "  vec3 tex = bg(vUv);",
+    "  vec3 col = effect(vUv, tex);",
+    "  gl_FragColor = vec4(col, 1.0);",
+    "}",
+  ].join("\n"),
+};
+
+const composer = new EffectComposer(renderer);
+const renderPass = new RenderPass(scene, camera);
+const pixelatePass = new ShaderPass(PixelateShader);
+composer.addPass(renderPass);
+composer.addPass(pixelatePass);
+pixelatePass.enabled = pixelateSettings.enabled;
 
 const light = new THREE.DirectionalLight(0xffffff, 3.0);
 light.position.set(8, 18, 18);
@@ -487,6 +593,15 @@ const parallaxLayers = {
   }),
 };
 
+const buildModeHiddenAtmosphereLayers = [
+  "distantClouds",
+  "nearClouds",
+  "edgeHaze",
+  "foreground",
+  "foregroundBase",
+];
+const buildModeLayerState = new Map();
+
 const debugSettings = {
   timeScale: 1,
   pauseParallax: false,
@@ -554,6 +669,11 @@ window.HookedDebug = {
     config.debugShowDroneAnchors = enabled;
     for (const anchor of anchors) anchor.debugAnchor.visible = enabled;
   },
+  setGlbNeutralOnly(enabled) {
+    config.debugGlbNeutralOnly = Boolean(enabled);
+    if (config.debugGlbNeutralOnly) resetGlbPivotAngles();
+    syncCharacterSourceVisibility();
+  },
   setDroneTensionStrength(value) {
     config.droneTensionStrength = value;
   },
@@ -562,8 +682,13 @@ window.HookedDebug = {
   },
   setSvgCharacter(enabled) {
     config.useSvgCharacter = enabled;
-    svgPuppet.group.visible = svgPuppet.loaded && enabled;
-    setPlaceholderCharacterVisible(!svgPuppet.loaded || !enabled);
+    svgPuppet.group.visible = svgPuppet.loaded && (enabled || config.svgCharacterOverlay);
+    setPlaceholderCharacterVisible(shouldShowPlaceholderCharacter());
+  },
+  setSvgOverlay(enabled) {
+    config.svgCharacterOverlay = enabled;
+    svgPuppet.group.visible = svgPuppet.loaded && (config.useSvgCharacter || enabled);
+    setPlaceholderCharacterVisible(shouldShowPlaceholderCharacter());
   },
 };
 
@@ -1096,8 +1221,493 @@ function createNinjaTexture() {
 
 const playerMesh = new THREE.Group();
 const playerBody = new THREE.Group();
+const playerAssetRoot = new THREE.Group();
+const playerRibbonLayer = new THREE.Group();
+playerMesh.renderOrder = 36;
+playerBody.visible = !config.useGlbCharacter;
+playerAssetRoot.renderOrder = 36;
+playerAssetRoot.visible = false;
 playerMesh.add(playerBody);
+playerMesh.add(playerAssetRoot);
+playerMesh.add(playerRibbonLayer);
 addGameplay(playerMesh);
+
+const glbCharacter = {
+  loaded: false,
+  group: null,
+  leftWristAnchor: null,
+  ribbonAnchor: null,
+  pivots: {},
+  debugMarkers: [],
+};
+const glbCharacterBaseScale = 1.7;
+const glbPivotNames = {
+  root: "M_root",
+  torso: "torso_pivot",
+  pelvis: "pelvis_pivot",
+  waist: "waist_pivot",
+  chest: "chest_pivot",
+  neck: "neck_pivot",
+  head: "head_pivot",
+  leftShoulder: "left_shoulder_pivot",
+  leftElbow: "left_elbow_pivot",
+  leftWrist: "left_wrist_pivot",
+  rightShoulder: "right_shoulder_pivot",
+  rightElbow: "right_elbow_pivot",
+  rightWrist: "right_wrist_pivot",
+  leftHip: "left_hip_pivot",
+  leftKnee: "left_knee_pivot",
+  leftAnkle: "left_ankle_pivot",
+  rightHip: "right_hip_pivot",
+  rightKnee: "right_knee_pivot",
+  rightAnkle: "right_ankle_pivot",
+};
+
+function syncCharacterSourceVisibility() {
+  const showGlbCharacter = config.useGlbCharacter && glbCharacter.loaded;
+  playerBody.visible = !showGlbCharacter && !config.debugGlbNeutralOnly;
+  playerAssetRoot.visible = showGlbCharacter;
+  playerRibbonLayer.visible = !config.debugGlbNeutralOnly;
+  for (const marker of glbCharacter.debugMarkers) {
+    marker.visible = config.debugGlbNeutralOnly;
+  }
+}
+
+function syncGlbCharacterTransform(facing = state.facing, flourishFlip = playerBody.rotation.z) {
+  playerAssetRoot.scale.set(
+    facing * characterSettings.scale * glbCharacterBaseScale,
+    characterSettings.scale * glbCharacterBaseScale,
+    characterSettings.scale * glbCharacterBaseScale,
+  );
+  playerAssetRoot.rotation.z = flourishFlip;
+  playerRibbonLayer.scale.set(facing * characterSettings.scale, characterSettings.scale, 1);
+  playerRibbonLayer.rotation.z = flourishFlip;
+}
+
+function setGlbPivotAngle(pivot, angle) {
+  if (pivot) pivot.rotation.z = angle;
+}
+
+function resetGlbPivotAngles() {
+  for (const pivot of Object.values(glbCharacter.pivots)) {
+    setGlbPivotAngle(pivot, 0);
+  }
+}
+
+function createGlbDebugMarker(name) {
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(name === glbPivotNames.root ? 0.065 : 0.04, 10, 8),
+    new THREE.MeshBasicMaterial({
+      color: name.includes("anchor") ? 0xfff35c : 0x6cf3ff,
+      transparent: true,
+      opacity: 0.92,
+      depthTest: false,
+    }),
+  );
+  marker.name = `${name}_debug_marker`;
+  marker.renderOrder = 90;
+  marker.visible = false;
+  return marker;
+}
+
+function clampJoint(angle, min, max) {
+  return THREE.MathUtils.clamp(angle, min, max);
+}
+
+const glbBindPoseAngles = {
+  leftShoulder: 0,
+  rightShoulder: 0,
+  leftHip: 0,
+  rightHip: 0,
+  leftAnkle: 0,
+  rightAnkle: 0,
+};
+
+const glbJointLimits = {
+  torso: [-0.24, 0.24],
+  neck: [-0.24, 0.24],
+  shoulder: [-1.45, 1.25],
+  elbow: [-1.65, 1.65],
+  wrist: [-0.42, 0.42],
+  hip: [-1.05, 1.15],
+  knee: [-1.45, 1.45],
+  ankle: [-0.5, 0.5],
+};
+
+function normalizeAngle(angle) {
+  return Math.atan2(Math.sin(angle), Math.cos(angle));
+}
+
+function localAngleTo(childPivot) {
+  if (!childPivot) return -Math.PI / 2;
+  return Math.atan2(childPivot.position.y, childPivot.position.x);
+}
+
+function localLengthTo(childPivot) {
+  if (!childPivot) return 0.35;
+  return Math.max(Math.hypot(childPivot.position.x, childPivot.position.y), 0.001);
+}
+
+function clampAngle(angle, [min, max]) {
+  return THREE.MathUtils.clamp(normalizeAngle(angle), min, max);
+}
+
+function solveTwoBoneAngles(targetX, targetY, upperLength, lowerLength, bendSign = 1) {
+  const minDistance = Math.max(Math.abs(upperLength - lowerLength) + 0.001, 0.001);
+  const maxDistance = Math.max(upperLength + lowerLength - 0.001, minDistance);
+  const distance = THREE.MathUtils.clamp(Math.hypot(targetX, targetY), minDistance, maxDistance);
+  const direction = Math.atan2(targetY, targetX);
+  const shoulderSpread = Math.acos(THREE.MathUtils.clamp(
+    (upperLength * upperLength + distance * distance - lowerLength * lowerLength) / (2 * upperLength * distance),
+    -1,
+    1,
+  ));
+  const upperAngle = direction + bendSign * shoulderSpread;
+  const elbowX = Math.cos(upperAngle) * upperLength;
+  const elbowY = Math.sin(upperAngle) * upperLength;
+  const lowerAngle = Math.atan2(targetY - elbowY, targetX - elbowX);
+  return { upperAngle, lowerAngle };
+}
+
+function setGlbTwoBonePose({
+  rootPivot,
+  midPivot,
+  endPivot,
+  upperName,
+  lowerName,
+  targetX,
+  targetY,
+  parentWorldAngle = 0,
+  bendSign = 1,
+  upperLimit,
+  lowerLimit,
+}) {
+  if (!rootPivot || !midPivot || !endPivot) return { upperWorld: -Math.PI / 2, lowerWorld: -Math.PI / 2 };
+  const upperRestAngle = localAngleTo(midPivot);
+  const lowerRestAngle = localAngleTo(endPivot);
+  const upperLength = localLengthTo(midPivot);
+  const lowerLength = localLengthTo(endPivot);
+  const solution = solveTwoBoneAngles(targetX, targetY, upperLength, lowerLength, bendSign);
+  const upperRotation = clampAngle(solution.upperAngle - parentWorldAngle - upperRestAngle, upperLimit);
+  const upperWorld = parentWorldAngle + upperRestAngle + upperRotation;
+  const lowerRotation = clampAngle(solution.lowerAngle - upperWorld - lowerRestAngle, lowerLimit);
+  const lowerWorld = upperWorld + lowerRestAngle + lowerRotation;
+  setGlbPivotAngle(rootPivot, glbBindPoseAngles[upperName] + upperRotation);
+  setGlbPivotAngle(midPivot, lowerRotation);
+  return { upperWorld, lowerWorld };
+}
+
+function setGlbIdlePose(pivots, idleBreath, pelvisWorld, waistWorld, chestWorld) {
+  setGlbPivotAngle(pivots.root, 0);
+  setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
+  setGlbPivotAngle(pivots.waist, clampAngle(waistWorld - pelvisWorld, glbJointLimits.torso));
+  setGlbPivotAngle(pivots.chest, clampAngle(chestWorld - waistWorld, glbJointLimits.torso));
+  setGlbPivotAngle(pivots.neck, clampAngle(-chestWorld * 0.28, glbJointLimits.neck));
+  setGlbPivotAngle(pivots.head, clampAngle(-chestWorld * 0.36 + idleBreath * 0.01, glbJointLimits.neck));
+  setGlbPivotAngle(pivots.leftShoulder, clampAngle(0.06 + idleBreath * 0.025, glbJointLimits.shoulder));
+  setGlbPivotAngle(pivots.leftElbow, clampAngle(0.03, glbJointLimits.elbow));
+  setGlbPivotAngle(pivots.leftWrist, clampAngle(-0.03, glbJointLimits.wrist));
+  setGlbPivotAngle(pivots.rightShoulder, clampAngle(-0.08 - idleBreath * 0.02, glbJointLimits.shoulder));
+  setGlbPivotAngle(pivots.rightElbow, clampAngle(-0.03, glbJointLimits.elbow));
+  setGlbPivotAngle(pivots.rightWrist, clampAngle(0.02, glbJointLimits.wrist));
+  setGlbPivotAngle(pivots.leftHip, clampAngle(0.02, glbJointLimits.hip));
+  setGlbPivotAngle(pivots.leftKnee, clampAngle(0.015 + Math.max(0, idleBreath) * 0.015, glbJointLimits.knee));
+  setGlbPivotAngle(pivots.leftAnkle, clampAngle(-0.02, glbJointLimits.ankle));
+  setGlbPivotAngle(pivots.rightHip, clampAngle(-0.015, glbJointLimits.hip));
+  setGlbPivotAngle(pivots.rightKnee, clampAngle(0.012 + Math.max(0, -idleBreath) * 0.015, glbJointLimits.knee));
+  setGlbPivotAngle(pivots.rightAnkle, clampAngle(0.02, glbJointLimits.ankle));
+}
+
+function setGlbRelativePose(now) {
+  const pivots = glbCharacter.pivots;
+  const idleBreath = state.playerAnimation === "idleHang" ? Math.sin(now * 3.2) : 0;
+  const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  const localVelocityX = state.velocity.x * state.facing;
+  const localVelocityY = state.velocity.y;
+  const speedLean = clampJoint(localVelocityX * 0.012, -0.18, 0.22);
+  const verticalLean = clampJoint(localVelocityY * 0.008, -0.14, 0.14);
+  const airborne = state.hasLaunched && !state.grounded && !state.gameOver && !state.finished;
+  const hooked = state.hookActive && (state.anchor || state.hookEnd);
+  const grappling = state.grappled && state.anchor;
+  const fallTuck = clampJoint(-state.velocity.y / 20, -0.2, 0.45);
+  const swing = clampJoint(localVelocityX / 20, -0.55, 0.65);
+  const flourishProgress = state.flourishSpinRemaining > 0
+    ? 1 - state.flourishSpinRemaining / config.flourishSpinDuration
+    : 0;
+  const tuck = state.flourishSpinRemaining > 0 ? Math.sin(flourishProgress * Math.PI) : 0;
+
+  const pelvis = speedLean * 0.22 - verticalLean * 0.12;
+  const waist = speedLean * 0.28 - verticalLean * 0.22 + idleBreath * 0.01;
+  const chest = speedLean * 0.34 - verticalLean * 0.28 + idleBreath * 0.014;
+
+  setGlbPivotAngle(pivots.root, 0);
+  const pelvisWorld = clampAngle(pelvis - tuck * 0.18, glbJointLimits.torso);
+  const waistWorld = clampAngle(waist - tuck * 0.28, glbJointLimits.torso);
+  const chestWorld = clampAngle(chest - tuck * 0.36, glbJointLimits.torso);
+  setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
+  setGlbPivotAngle(pivots.waist, clampAngle(waistWorld - pelvisWorld, glbJointLimits.torso));
+  setGlbPivotAngle(pivots.chest, clampAngle(chestWorld - waistWorld, glbJointLimits.torso));
+  setGlbPivotAngle(pivots.neck, clampAngle(-chestWorld * 0.28, glbJointLimits.neck));
+  setGlbPivotAngle(pivots.head, clampAngle(-chestWorld * 0.36 + idleBreath * 0.01, glbJointLimits.neck));
+
+  if (!state.hasLaunched || state.grounded || state.playerAnimation === "idleHang") {
+    setGlbIdlePose(pivots, idleBreath, pelvisWorld, waistWorld, chestWorld);
+    return;
+  }
+
+  const ropeTarget = hooked
+    ? (grappling ? getVisualGrapplePoint(state.anchor, scratchRopeEnd) : state.hookEnd)
+    : null;
+  const ropeDirection = ropeTarget
+    ? scratchVelocityDirection.subVectors(ropeTarget, state.player).normalize()
+    : scratchVelocityDirection.set(0.2 * state.facing, -0.98, 0).normalize();
+  const ropeX = ropeDirection.x * state.facing;
+  const ropeY = ropeDirection.y;
+  const leftArmLength = localLengthTo(pivots.leftElbow) + localLengthTo(pivots.leftWrist);
+  const rightArmLength = localLengthTo(pivots.rightElbow) + localLengthTo(pivots.rightWrist);
+  const leftLegLength = localLengthTo(pivots.leftKnee) + localLengthTo(pivots.leftAnkle);
+  const rightLegLength = localLengthTo(pivots.rightKnee) + localLengthTo(pivots.rightAnkle);
+
+  let leftHandTarget = {
+    x: -0.04 + idleBreath * 0.01,
+    y: -leftArmLength * 0.92,
+    bend: 1,
+  };
+  let rightHandTarget = {
+    x: 0.14 - swing * 0.18,
+    y: -rightArmLength * 0.72 + idleBreath * 0.025,
+    bend: -1,
+  };
+  let leftFootTarget = {
+    x: 0.06 - swing * 0.18,
+    y: -leftLegLength * 0.94,
+    bend: 1,
+  };
+  let rightFootTarget = {
+    x: -0.08 - swing * 0.14,
+    y: -rightLegLength * 0.9,
+    bend: -1,
+  };
+
+  if (hooked) {
+    leftHandTarget = {
+      x: ropeX * leftArmLength * 0.96,
+      y: ropeY * leftArmLength * 0.96,
+      bend: ropeX > 0 ? -1 : 1,
+    };
+    rightHandTarget = {
+      x: -0.18 - swing * 0.2 - ropeX * 0.08,
+      y: -rightArmLength * (0.58 + fallTuck * 0.16) - ropeY * 0.08,
+      bend: -1,
+    };
+    leftFootTarget = {
+      x: -swing * 0.34 - ropeX * 0.16,
+      y: -leftLegLength * (0.74 - fallTuck * 0.18),
+      bend: 1,
+    };
+    rightFootTarget = {
+      x: -swing * 0.42 - ropeX * 0.22,
+      y: -rightLegLength * (0.82 - fallTuck * 0.12),
+      bend: -1,
+    };
+  } else if (airborne) {
+    leftHandTarget = { x: 0.14 + swing * 0.12, y: -leftArmLength * 0.68 + fallTuck * 0.08, bend: 1 };
+    rightHandTarget = { x: -0.2 - swing * 0.14, y: -rightArmLength * 0.62 + fallTuck * 0.08, bend: -1 };
+    leftFootTarget = { x: 0.2 + swing * 0.18, y: -leftLegLength * (0.78 - fallTuck * 0.16), bend: 1 };
+    rightFootTarget = { x: -0.18 + swing * 0.12, y: -rightLegLength * (0.82 - fallTuck * 0.12), bend: -1 };
+  } else if (speed > 0.5) {
+    const stride = Math.sin(now * 8.5) * clampJoint(speed / 20, 0, 0.28);
+    leftHandTarget.x += stride * 0.12;
+    rightHandTarget.x -= stride * 0.12;
+    leftFootTarget.x += stride * 0.34;
+    rightFootTarget.x -= stride * 0.3;
+  }
+
+  if (tuck > 0) {
+    const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
+    leftHandTarget = { x: 0.18, y: -leftArmLength * (0.42 - compact * 0.1), bend: 1 };
+    rightHandTarget = { x: -0.18, y: -rightArmLength * (0.42 - compact * 0.1), bend: -1 };
+    leftFootTarget = { x: 0.22, y: -leftLegLength * (0.38 - compact * 0.12), bend: 1 };
+    rightFootTarget = { x: -0.22, y: -rightLegLength * (0.38 - compact * 0.12), bend: -1 };
+  }
+
+  const leftArm = setGlbTwoBonePose({
+    rootPivot: pivots.leftShoulder,
+    midPivot: pivots.leftElbow,
+    endPivot: pivots.leftWrist,
+    upperName: "leftShoulder",
+    lowerName: "leftElbow",
+    targetX: leftHandTarget.x,
+    targetY: leftHandTarget.y,
+    parentWorldAngle: chestWorld,
+    bendSign: leftHandTarget.bend,
+    upperLimit: glbJointLimits.shoulder,
+    lowerLimit: glbJointLimits.elbow,
+  });
+  const rightArm = setGlbTwoBonePose({
+    rootPivot: pivots.rightShoulder,
+    midPivot: pivots.rightElbow,
+    endPivot: pivots.rightWrist,
+    upperName: "rightShoulder",
+    lowerName: "rightElbow",
+    targetX: rightHandTarget.x,
+    targetY: rightHandTarget.y,
+    parentWorldAngle: chestWorld,
+    bendSign: rightHandTarget.bend,
+    upperLimit: glbJointLimits.shoulder,
+    lowerLimit: glbJointLimits.elbow,
+  });
+  const leftLeg = setGlbTwoBonePose({
+    rootPivot: pivots.leftHip,
+    midPivot: pivots.leftKnee,
+    endPivot: pivots.leftAnkle,
+    upperName: "leftHip",
+    lowerName: "leftKnee",
+    targetX: leftFootTarget.x,
+    targetY: leftFootTarget.y,
+    parentWorldAngle: pelvisWorld,
+    bendSign: leftFootTarget.bend,
+    upperLimit: glbJointLimits.hip,
+    lowerLimit: glbJointLimits.knee,
+  });
+  const rightLeg = setGlbTwoBonePose({
+    rootPivot: pivots.rightHip,
+    midPivot: pivots.rightKnee,
+    endPivot: pivots.rightAnkle,
+    upperName: "rightHip",
+    lowerName: "rightKnee",
+    targetX: rightFootTarget.x,
+    targetY: rightFootTarget.y,
+    parentWorldAngle: pelvisWorld,
+    bendSign: rightFootTarget.bend,
+    upperLimit: glbJointLimits.hip,
+    lowerLimit: glbJointLimits.knee,
+  });
+
+  const ropeAngle = Math.atan2(ropeY, ropeX);
+  setGlbPivotAngle(pivots.leftWrist, hooked
+    ? clampAngle(ropeAngle - leftArm.lowerWorld, glbJointLimits.wrist)
+    : clampAngle(-0.08 + idleBreath * 0.03, glbJointLimits.wrist));
+  setGlbPivotAngle(pivots.rightWrist, clampAngle(-rightArm.lowerWorld * 0.08, glbJointLimits.wrist));
+  setGlbPivotAngle(pivots.leftAnkle, clampAngle(-leftLeg.lowerWorld * 0.1, glbJointLimits.ankle));
+  setGlbPivotAngle(pivots.rightAnkle, clampAngle(-rightLeg.lowerWorld * 0.1, glbJointLimits.ankle));
+}
+
+function lineAngle(line, startIndex = 0, endIndex = 1) {
+  const positions = line.geometry.attributes.position;
+  const ax = positions.getX(startIndex);
+  const ay = positions.getY(startIndex);
+  const bx = positions.getX(endIndex);
+  const by = positions.getY(endIndex);
+  return Math.atan2(by - ay, bx - ax);
+}
+
+function poseGlbCharacterFromPhysics(now) {
+  if (!glbCharacter.loaded) return;
+
+  if (config.debugGlbNeutralOnly) {
+    resetGlbPivotAngles();
+    return;
+  }
+
+  if (config.useRestRelativeGlbPose) {
+    setGlbRelativePose(now);
+    return;
+  }
+
+  const pivots = glbCharacter.pivots;
+  const idleBreath = state.playerAnimation === "idleHang" ? Math.sin(now * 3.2) : 0;
+  const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  const speedLean = THREE.MathUtils.clamp(state.velocity.x * state.facing * 0.018, -0.28, 0.32);
+  const verticalLean = THREE.MathUtils.clamp(state.velocity.y * 0.014, -0.24, 0.24);
+  const frontArmUpper = lineAngle(playerLimbs.frontArm, 0, 1);
+  const frontArmLower = lineAngle(playerLimbs.frontArm, 1, 2);
+  const backArmUpper = lineAngle(playerLimbs.backArm, 0, 1);
+  const backArmLower = lineAngle(playerLimbs.backArm, 1, 2);
+  const frontLegUpper = lineAngle(playerLimbs.frontLeg, 0, 1);
+  const frontLegLower = lineAngle(playerLimbs.frontLeg, 1, 2);
+  const backLegUpper = lineAngle(playerLimbs.backLeg, 0, 1);
+  const backLegLower = lineAngle(playerLimbs.backLeg, 1, 2);
+
+  const pelvisWorld = speedLean * 0.26 - verticalLean * 0.18;
+  const waistWorld = speedLean * 0.46 - verticalLean * 0.42 + idleBreath * 0.015;
+  const chestWorld = speedLean * 0.68 - verticalLean * 0.62 + idleBreath * 0.02;
+  setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
+  setGlbPivotAngle(pivots.waist, waistWorld - pelvisWorld);
+  setGlbPivotAngle(pivots.chest, chestWorld - waistWorld);
+  setGlbPivotAngle(pivots.neck, -chestWorld * 0.34);
+  setGlbPivotAngle(pivots.head, -chestWorld * 0.4 + idleBreath * 0.015);
+  setGlbPivotAngle(pivots.leftShoulder, frontArmUpper - chestWorld);
+  setGlbPivotAngle(pivots.leftElbow, frontArmLower - frontArmUpper);
+  setGlbPivotAngle(pivots.rightShoulder, backArmUpper - chestWorld);
+  setGlbPivotAngle(pivots.rightElbow, backArmLower - backArmUpper);
+  setGlbPivotAngle(pivots.leftHip, frontLegUpper - pelvisWorld);
+  setGlbPivotAngle(pivots.leftKnee, frontLegLower - frontLegUpper);
+  setGlbPivotAngle(pivots.rightHip, backLegUpper - pelvisWorld);
+  setGlbPivotAngle(pivots.rightKnee, backLegLower - backLegUpper);
+
+  const footCounter = THREE.MathUtils.clamp(speed / 28, 0, 0.38);
+  setGlbPivotAngle(pivots.leftAnkle, -frontLegLower + footCounter);
+  setGlbPivotAngle(pivots.rightAnkle, -backLegLower - footCounter * 0.6);
+}
+
+function loadGlbCharacter() {
+  if (!config.useGlbCharacter) return;
+
+  const loader = new GLTFLoader();
+  loader.load(
+    `${config.glbCharacterPath}?v=${encodeURIComponent(GAME_VERSION)}`,
+    (gltf) => {
+      const model = gltf.scene;
+      model.name = "M Blender character";
+      model.rotation.set(0, 0, 0);
+      model.position.set(0, 0, 0);
+      model.renderOrder = 36;
+      glbCharacter.pivots = {};
+      glbCharacter.leftWristAnchor = null;
+      glbCharacter.ribbonAnchor = null;
+      glbCharacter.debugMarkers = [];
+      model.traverse((child) => {
+        child.frustumCulled = false;
+        child.renderOrder = 36;
+        if (child.material) {
+          child.material.transparent = true;
+          child.material.opacity = 1;
+          child.material.depthTest = false;
+          child.material.depthWrite = false;
+          child.material.needsUpdate = true;
+        }
+        if (child.name === "left_wrist_anchor") glbCharacter.leftWristAnchor = child;
+        if (child.name === "ribbon_anchor") glbCharacter.ribbonAnchor = child;
+        for (const [key, name] of Object.entries(glbPivotNames)) {
+          if (child.name === name) {
+            glbCharacter.pivots[key] = child;
+            const marker = createGlbDebugMarker(name);
+            child.add(marker);
+            glbCharacter.debugMarkers.push(marker);
+          }
+        }
+      });
+      for (const anchor of [glbCharacter.leftWristAnchor, glbCharacter.ribbonAnchor]) {
+        if (!anchor) continue;
+        const marker = createGlbDebugMarker(anchor.name);
+        anchor.add(marker);
+        glbCharacter.debugMarkers.push(marker);
+      }
+      playerAssetRoot.clear();
+      playerAssetRoot.add(model);
+      glbCharacter.loaded = true;
+      glbCharacter.group = model;
+      syncGlbCharacterTransform();
+      syncCharacterSourceVisibility();
+    },
+    undefined,
+    () => {
+      glbCharacter.loaded = false;
+      syncCharacterSourceVisibility();
+    },
+  );
+}
 
 const limbMaterial = new THREE.LineBasicMaterial({
   color: 0xc98a19,
@@ -1106,7 +1716,7 @@ const limbMaterial = new THREE.LineBasicMaterial({
   depthTest: false,
 });
 const legMaterial = new THREE.LineBasicMaterial({
-  color: 0x151719,
+  color: 0x0b1012,
   transparent: true,
   opacity: 1,
   depthTest: false,
@@ -1126,14 +1736,14 @@ for (const limb of Object.values(playerLimbs)) {
 }
 
 const playerPalette = {
-  gold: 0xdca12b,
-  goldLight: 0xffdf68,
-  goldDark: 0x8b5b17,
-  black: 0x101214,
-  charcoal: 0x25292d,
-  red: 0xd13c2e,
-  redDark: 0x8b1e16,
-  glow: 0xfff0a3,
+  gold: 0xf1a91a,
+  goldLight: 0xffea69,
+  goldDark: 0x9a6518,
+  black: 0x0b1012,
+  charcoal: 0x20272b,
+  red: 0xff3b24,
+  redDark: 0x8f1410,
+  glow: 0xffff77,
 };
 const playerMaterials = Object.fromEntries(
   Object.entries(playerPalette).map(([name, color]) => [
@@ -1147,6 +1757,8 @@ const playerMaterials = Object.fromEntries(
   ]),
 );
 const playerDotGeometry = new THREE.CircleGeometry(0.5, 14);
+const playerPlateGeometry = new THREE.PlaneGeometry(1, 1);
+const playerRingGeometry = new THREE.TorusGeometry(0.5, 0.11, 8, 18);
 const playerLineMaterial = new THREE.LineBasicMaterial({
   color: playerPalette.red,
   transparent: true,
@@ -1165,6 +1777,41 @@ function createPlayerDot(name, x, y, radius, materialName, z = 0.12) {
   return dot;
 }
 
+function createPlayerPlate(name, width, height, materialName, z = 0.13) {
+  const plate = new THREE.Mesh(playerPlateGeometry, playerMaterials[materialName]);
+  plate.name = name;
+  plate.scale.set(width, height, 1);
+  plate.position.z = z;
+  plate.renderOrder = 26;
+  plate.frustumCulled = false;
+  playerBody.add(plate);
+  return plate;
+}
+
+function createPlayerShape(name, points, materialName, z = 0.13) {
+  const shape = new THREE.Shape();
+  shape.moveTo(points[0][0], points[0][1]);
+  for (let index = 1; index < points.length; index += 1) shape.lineTo(points[index][0], points[index][1]);
+  shape.closePath();
+  const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), playerMaterials[materialName]);
+  mesh.name = name;
+  mesh.position.z = z;
+  mesh.renderOrder = 27;
+  mesh.frustumCulled = false;
+  playerBody.add(mesh);
+  return mesh;
+}
+
+function createPlayerRing(name, materialName = "black", z = 0.29) {
+  const ring = new THREE.Mesh(playerRingGeometry, playerMaterials[materialName]);
+  ring.name = name;
+  ring.position.z = z;
+  ring.renderOrder = 29;
+  ring.frustumCulled = false;
+  playerBody.add(ring);
+  return ring;
+}
+
 function createPlayerLine(name, color = playerPalette.red, opacity = 0.94, pointCount = 4) {
   const line = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints(Array.from({ length: pointCount }, () => new THREE.Vector3())),
@@ -1172,6 +1819,7 @@ function createPlayerLine(name, color = playerPalette.red, opacity = 0.94, point
       color,
       transparent: true,
       opacity,
+      linewidth: name.toLowerCase().includes("scarf") ? 3 : 1,
       depthTest: false,
     }),
   );
@@ -1201,6 +1849,50 @@ function setRibbonLine(line, points, z = 0.1) {
 }
 
 const playerRig = {
+  plates: {
+    neckStack: createPlayerPlate("neckStack", 0.18, 0.44, "charcoal", 0.16),
+    neckFront: createPlayerPlate("neckFront", 0.08, 0.34, "black", 0.2),
+    helmetShell: createPlayerShape("helmetShell", [[-0.22, 0.16], [0.0, 0.24], [0.2, 0.12], [0.23, -0.1], [0.12, -0.24], [-0.05, -0.16], [-0.2, -0.05]], "gold", 0.24),
+    helmetMask: createPlayerShape("helmetMask", [[-0.16, 0.06], [-0.03, 0.08], [0.13, -0.12], [0.05, -0.2], [-0.08, -0.08]], "black", 0.27),
+    helmetBeak: createPlayerPlate("helmetBeak", 0.24, 0.08, "goldLight", 0.27),
+    helmetBackPlate: createPlayerPlate("helmetBackPlate", 0.24, 0.22, "gold", 0.19),
+    helmetJaw: createPlayerPlate("helmetJaw", 0.16, 0.08, "goldLight", 0.28),
+    torsoCore: createPlayerPlate("torsoCore", 0.28, 0.56, "charcoal", 0.13),
+    chestArmor: createPlayerPlate("chestArmor", 0.4, 0.28, "gold", 0.18),
+    chestShell: createPlayerShape("chestShell", [[-0.22, 0.08], [-0.05, 0.18], [0.24, 0.1], [0.31, -0.08], [0.05, -0.22], [-0.18, -0.12]], "goldLight", 0.22),
+    chestCoreInset: createPlayerShape("chestCoreInset", [[-0.1, 0.15], [0.08, 0.1], [0.06, -0.18], [-0.12, -0.12]], "black", 0.23),
+    chestWing: createPlayerPlate("chestWing", 0.22, 0.22, "goldLight", 0.2),
+    abdomenPlate: createPlayerPlate("abdomenPlate", 0.27, 0.22, "black", 0.19),
+    pelvisArmor: createPlayerPlate("pelvisArmor", 0.26, 0.18, "gold", 0.2),
+    leftUpperArm: createPlayerPlate("leftUpperArmPlate", 0.13, 0.42, "gold", 0.18),
+    leftShoulderShell: createPlayerShape("leftShoulderShell", [[-0.12, 0.1], [0.1, 0.13], [0.16, -0.02], [0.08, -0.14], [-0.12, -0.1], [-0.16, 0.03]], "goldLight", 0.24),
+    leftLowerArm: createPlayerPlate("leftLowerArmPlate", 0.12, 0.46, "goldLight", 0.18),
+    leftForearmDecalA: createPlayerPlate("leftForearmDecalA", 0.035, 0.12, "red", 0.22),
+    leftForearmDecalB: createPlayerPlate("leftForearmDecalB", 0.035, 0.12, "redDark", 0.22),
+    rightUpperArm: createPlayerPlate("rightUpperArmPlate", 0.11, 0.38, "goldDark", 0.1),
+    rightLowerArm: createPlayerPlate("rightLowerArmPlate", 0.1, 0.42, "goldDark", 0.1),
+    leftUpperLeg: createPlayerPlate("leftUpperLegPlate", 0.16, 0.52, "gold", 0.18),
+    leftHipShell: createPlayerShape("leftHipShell", [[-0.16, 0.06], [0.1, 0.1], [0.14, -0.08], [0.0, -0.18], [-0.18, -0.08]], "gold", 0.23),
+    leftLowerLeg: createPlayerPlate("leftLowerLegPlate", 0.13, 0.5, "goldLight", 0.18),
+    leftThighDecalA: createPlayerPlate("leftThighDecalA", 0.045, 0.13, "red", 0.23),
+    leftThighDecalB: createPlayerPlate("leftThighDecalB", 0.045, 0.13, "redDark", 0.23),
+    rightUpperLeg: createPlayerPlate("rightUpperLegPlate", 0.13, 0.46, "goldDark", 0.09),
+    rightLowerLeg: createPlayerPlate("rightLowerLegPlate", 0.11, 0.46, "goldDark", 0.09),
+    leftFootSole: createPlayerPlate("leftFootSole", 0.28, 0.075, "goldLight", 0.22),
+    rightFootSole: createPlayerPlate("rightFootSole", 0.22, 0.06, "goldDark", 0.1),
+    frontFingerA: createPlayerPlate("frontFingerA", 0.03, 0.14, "goldLight", 0.24),
+    frontFingerB: createPlayerPlate("frontFingerB", 0.025, 0.12, "gold", 0.24),
+    backFingerA: createPlayerPlate("backFingerA", 0.025, 0.12, "goldDark", 0.1),
+  },
+  rings: {
+    eye: createPlayerRing("eyeRing", "black", 0.31),
+    shoulderFront: createPlayerRing("shoulderFrontRing", "black", 0.3),
+    elbowFront: createPlayerRing("elbowFrontRing", "black", 0.3),
+    kneeFront: createPlayerRing("kneeFrontRing", "black", 0.3),
+    ankleFront: createPlayerRing("ankleFrontRing", "black", 0.3),
+    shoulderBack: createPlayerRing("shoulderBackRing", "black", 0.12),
+    kneeBack: createPlayerRing("kneeBackRing", "black", 0.12),
+  },
   dots: {
     torsoShadow: createPlayerDot("torsoShadow", 0.03, 0.18, 0.38, "black", 0.09),
     torsoGold: createPlayerDot("torsoGold", 0.08, 0.34, 0.31, "gold", 0.14),
@@ -1210,11 +1902,14 @@ const playerRig = {
     helmetBack: createPlayerDot("helmetBack", -0.14, 0.92, 0.24, "goldDark", 0.17),
     visor: createPlayerDot("visor", 0.14, 1.0, 0.13, "black", 0.22),
     helmetShine: createPlayerDot("helmetShine", -0.1, 1.08, 0.08, "goldLight", 0.24),
+    eyeCore: createPlayerDot("eyeCore", 0.14, 1.0, 0.045, "red", 0.26),
+    eyeGlow: createPlayerDot("eyeGlow", 0.14, 1.0, 0.075, "glow", 0.25),
     scarfKnot: createPlayerDot("scarfKnot", -0.26, 0.88, 0.08, "red", 0.22),
     shoulderBack: createPlayerDot("shoulderBack", -0.12, 0.62, 0.13, "goldDark", 0.11),
     shoulderFront: createPlayerDot("shoulderFront", 0.22, 0.61, 0.15, "gold", 0.2),
     forearmGrapple: createPlayerDot("forearmGrapple", 0.5, 0.18, 0.12, "charcoal", 0.23),
     grappleLight: createPlayerDot("grappleLight", 0.55, 0.21, 0.045, "glow", 0.25),
+    elbowFront: createPlayerDot("elbowFront", 0.38, 0.36, 0.05, "goldDark", 0.24),
     frontHand: createPlayerDot("frontHand", 0.62, 0.1, 0.09, "goldLight", 0.23),
     backHand: createPlayerDot("backHand", -0.56, 0.16, 0.08, "goldDark", 0.08),
     hipFront: createPlayerDot("hipFront", 0.2, -0.25, 0.12, "gold", 0.19),
@@ -1236,8 +1931,11 @@ const playerRig = {
 
 const svgPuppet = {
   loaded: false,
+  rigData: null,
   parts: {},
   group: new THREE.Group(),
+  autoFitScale: 1,
+  wristLocal: new THREE.Vector3(),
 };
 svgPuppet.group.name = "svgPuppet";
 svgPuppet.group.visible = false;
@@ -1248,30 +1946,32 @@ for (const line of [
   playerRig.lines.scarfTopShadow,
   playerRig.lines.scarfBottomShadow,
 ]) {
+  playerBody.remove(line);
+  playerRibbonLayer.add(line);
   line.renderOrder = 54;
 }
 
 const svgLayerOrder = [
+  "leftFoot",
+  "leftUpperLeg",
+  "leftLowerLeg",
+  "leftUpperArm",
+  "leftLowerArm",
+  "torsoUpper",
+  "torsoLower",
   "head",
-  "rightUpperArm",
-  "rightLowerArm",
-  "rightHand",
   "rightUpperLeg",
   "rightLowerLeg",
   "rightFoot",
-  "torsoUpper",
-  "torsoLower",
-  "leftUpperArm",
-  "leftLowerArm",
-  "leftHand",
-  "leftUpperLeg",
-  "leftLowerLeg",
-  "leftFoot",
+  "rightUpperArm",
+  "rightLowerArm",
+  "rightHand",
 ];
 
 function getSvgLayerRenderOrder(name) {
-  const index = svgLayerOrder.indexOf(name);
-  return 32 + (svgLayerOrder.length - index);
+  const order = svgPuppet.rigData?.layerOrder?.length ? svgPuppet.rigData.layerOrder : svgLayerOrder;
+  const index = order.indexOf(name);
+  return 32 + (index >= 0 ? index : order.length);
 }
 
 const svgPartDefinitions = {
@@ -1290,6 +1990,31 @@ const svgPartDefinitions = {
   leftUpperLeg: { file: "leg_upper.svg", jointA: "joint-groin", jointB: "joint-knee", jointSpan: 0.62, pivot: "joint-groin", z: 0.39 },
   leftLowerLeg: { file: "leg_lower.svg", jointA: "joint-knee", jointB: "joint-ankle", jointSpan: 0.58, pivot: "joint-knee", z: 0.38 },
   leftFoot: { file: "foot.svg", height: 0.2, pivot: "joint-foot", z: 0.37 },
+};
+
+// Local playerBody units. Tune these instead of redrawing SVG art for first-pass alignment.
+const svgAttachmentAdjustments = {
+  head: { x: 0.02, y: 0.03, scale: 0.84 },
+  torsoUpper: { x: 0.01, y: 0, scaleX: 0.78, scaleY: 0.9 },
+  torsoLower: { x: 0.01, y: 0.02, scaleX: 0.82, scaleY: 0.86 },
+  leftUpperArm: { x: 0, y: 0, scale: 0.72 },
+  leftLowerArm: { x: 0, y: 0, scale: 0.72 },
+  rightUpperArm: { x: 0, y: -0.01, scale: 0.72 },
+  rightLowerArm: { x: 0, y: -0.01, scale: 0.72 },
+  rightHand: { x: 0, y: -0.01, scale: 0.68 },
+  leftUpperLeg: { x: 0, y: 0.01, scale: 0.72 },
+  leftLowerLeg: { x: 0, y: 0, scale: 0.7 },
+  leftFoot: { x: 0, y: -0.01, scale: 0.66 },
+  rightUpperLeg: { x: 0, y: 0.01, scale: 0.7 },
+  rightLowerLeg: { x: 0, y: 0, scale: 0.68 },
+  rightFoot: { x: 0, y: -0.01, scale: 0.64 },
+};
+
+const svgRibbonAnchorAdjustment = {
+  x: -0.02,
+  y: 0.03,
+  spacingX: 0.02,
+  spacingY: -0.04,
 };
 
 function parseSvgViewBox(svgText) {
@@ -1412,7 +2137,9 @@ async function loadSvgPuppetPart(name, definition) {
   const { doc, viewBox, joints, jointsById, ribbonAnchors, ribbonAnchorsById, isMarkerCircle } = parseSvgViewBox(svgText);
   const image = await svgTextToImage(stripSvgJointMarkers(doc, isMarkerCircle));
   const [, , viewWidth = image.naturalWidth || 1, viewHeight = image.naturalHeight || 1] = viewBox;
-  const unitsPerPixel = definition.jointSpan
+  const unitsPerPixel = config.svgCharacterUseRigData
+    ? 1
+    : definition.jointSpan
     ? definition.jointSpan / getSvgDefinitionJointSpan(definition, jointsById, viewBox)
     : definition.height
     ? definition.height / viewHeight
@@ -1429,20 +2156,32 @@ async function loadSvgPuppetPart(name, definition) {
     depthWrite: false,
   });
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+  const shadowMaterial = new THREE.MeshBasicMaterial({
+    map: texture,
+    color: 0x070a0c,
+    transparent: true,
+    opacity: 0.34,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const shadowMesh = new THREE.Mesh(mesh.geometry, shadowMaterial);
   mesh.position.set(
     width * 0.5 - pivot.x * unitsPerPixel,
     pivot.y * unitsPerPixel - height * 0.5,
     definition.z,
   );
+  shadowMesh.position.set(mesh.position.x - 12 * unitsPerPixel, mesh.position.y - 6 * unitsPerPixel, definition.z - 0.012);
   mesh.renderOrder = getSvgLayerRenderOrder(name);
+  shadowMesh.renderOrder = getSvgLayerRenderOrder(name) - 0.5;
   mesh.frustumCulled = false;
+  shadowMesh.frustumCulled = false;
   const group = new THREE.Group();
   group.name = `svg-${name}`;
   group.renderOrder = getSvgLayerRenderOrder(name);
   group.frustumCulled = false;
-  group.add(mesh);
+  group.add(shadowMesh, mesh);
   svgPuppet.group.add(group);
-  return { group, mesh, width, height, jointSpan, unitsPerPixel, viewBox, joints, jointsById, ribbonAnchors, ribbonAnchorsById, definition };
+  return { name, group, mesh, shadowMesh, width, height, jointSpan, unitsPerPixel, viewBox, joints, jointsById, ribbonAnchors, ribbonAnchorsById, definition };
 }
 
 function setPlaceholderCharacterVisible(visible) {
@@ -1452,8 +2191,28 @@ function setPlaceholderCharacterVisible(visible) {
   playerRig.lines.ribB.visible = visible;
 }
 
+function shouldShowPlaceholderCharacter() {
+  if (config.useGlbCharacter && glbCharacter.loaded) return false;
+  if (config.debugGlbNeutralOnly) return false;
+  if (config.useSvgCharacter) return false;
+  if (config.svgCharacterOverlay && config.hidePlaceholderWithSvgOverlay && svgPuppet.loaded) return false;
+  return true;
+}
+
+async function loadSvgRigData() {
+  try {
+    const response = await fetch("./data/m-rig.json", { cache: "no-store" });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    console.warn("SVG rig data failed to load; using procedural SVG placement.", error);
+    return null;
+  }
+}
+
 async function loadSvgPuppet() {
   try {
+    svgPuppet.rigData = await loadSvgRigData();
     const entries = await Promise.all(
       Object.entries(svgPartDefinitions).map(async ([name, definition]) => [
         name,
@@ -1462,8 +2221,8 @@ async function loadSvgPuppet() {
     );
     svgPuppet.parts = Object.fromEntries(entries);
     svgPuppet.loaded = true;
-    svgPuppet.group.visible = config.useSvgCharacter;
-    setPlaceholderCharacterVisible(!config.useSvgCharacter);
+    svgPuppet.group.visible = config.useSvgCharacter || config.svgCharacterOverlay;
+    setPlaceholderCharacterVisible(shouldShowPlaceholderCharacter());
   } catch (error) {
     console.warn("SVG puppet failed to load; keeping placeholder character.", error);
     svgPuppet.loaded = false;
@@ -1477,6 +2236,186 @@ function placeSvgPart(part, x, y, rotation = 0, scaleX = 1, scaleY = 1) {
   part.group.position.set(x, y, 0);
   part.group.rotation.z = rotation;
   part.group.scale.set(scaleX, scaleY, 1);
+}
+
+function getRigPartSecondaryMotion(name, now) {
+  const partName = name.toLowerCase();
+  const idle = !state.hasLaunched || state.grounded || state.paused;
+  const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  const swingAmount = THREE.MathUtils.clamp(speed / 22, 0, 1);
+  const breath = Math.sin(now * 3.1);
+  const flutter = Math.sin(now * 5.2 + name.length * 0.73);
+  const motion = { x: 0, y: 0, rotation: 0, scale: 1 };
+
+  if (name === "torsoUpper" || name === "torsoLower") {
+    motion.y = breath * (idle ? 0.035 : 0.018);
+    motion.rotation = breath * (idle ? 1.6 : 0.8);
+    return motion;
+  }
+  if (name === "head") {
+    motion.x = breath * 0.018;
+    motion.y = breath * 0.024;
+    motion.rotation = breath * 2.2 + (state.grappled ? -state.velocity.x * 0.08 : 0);
+    return motion;
+  }
+  if (partName.includes("right") && (partName.includes("arm") || partName.includes("hand"))) {
+    motion.rotation = flutter * (idle ? 2.8 : 4.5 * swingAmount);
+    motion.y = flutter * 0.012;
+    return motion;
+  }
+  if (partName.includes("leg") || partName.includes("foot")) {
+    motion.rotation = flutter * (idle ? 1.4 : 3.2 * swingAmount);
+    motion.x = flutter * 0.01;
+    return motion;
+  }
+  if (name === "leftUpperArm" || name === "leftLowerArm" || name === "leftHand") {
+    motion.rotation = state.grappled || state.hookActive ? 0 : flutter * 1.2;
+  }
+  return motion;
+}
+
+function applySvgAttachmentAdjustment(part) {
+  const adjustment = svgAttachmentAdjustments[part?.name];
+  if (!adjustment) return;
+  part.group.position.x += adjustment.x ?? 0;
+  part.group.position.y += adjustment.y ?? 0;
+  part.group.rotation.z += adjustment.rotation ?? 0;
+  part.group.scale.x *= adjustment.scaleX ?? adjustment.scale ?? 1;
+  part.group.scale.y *= adjustment.scaleY ?? adjustment.scale ?? 1;
+}
+
+function placeSvgPartFromRigData(part, values, now = performance.now() / 1000) {
+  if (!part || !values) return;
+  const rigScale = config.svgRigScale * characterSettings.scale;
+  const motion = getRigPartSecondaryMotion(part.name, now);
+  part.group.visible = true;
+  part.group.position.set(values.x * rigScale + motion.x, -values.y * rigScale + motion.y, 0);
+  part.group.rotation.z = -THREE.MathUtils.degToRad((values.rotation || 0) + motion.rotation);
+  const partScale = (values.scale || 1) * rigScale * motion.scale;
+  part.group.scale.set(partScale, partScale, 1);
+}
+
+function getSvgRigPose() {
+  const rig = svgPuppet.rigData;
+  if (!rig) return null;
+  const swingPoseName = rig.baselinePose || "m_mid_swing";
+  const swingPose = rig.animations?.[swingPoseName];
+  const shouldUseSwingPose = state.hookActive || state.grappled || state.playerAnimation === "midSwing";
+  if (shouldUseSwingPose && swingPose) return swingPose;
+  return rig.parts || swingPose || null;
+}
+
+function alignSvgRigToWrist() {
+  const lowerArm = svgPuppet.parts.leftLowerArm;
+  if (!lowerArm) return;
+  const wrist = getSvgPartJointRigPoint(lowerArm, "joint-wrist", svgScratchA);
+  const target = playerRig.dots.grappleLight.position;
+  svgPuppet.group.position.set(
+    target.x - wrist.x * svgPuppet.group.scale.x,
+    target.y - wrist.y * svgPuppet.group.scale.y,
+    0,
+  );
+}
+
+function normalizeSvgRigHeight() {
+  const height = getObjectLocalHeight(svgPuppet.group);
+  if (height <= 0) {
+    svgPuppet.group.scale.setScalar(1);
+    return;
+  }
+  const desiredScale = THREE.MathUtils.clamp(config.svgRigTargetHeight / height, 0.45, 1.8);
+  svgPuppet.group.scale.setScalar(desiredScale);
+}
+
+function getSvgRigWristLocal(target = svgPuppet.wristLocal) {
+  const poseName = svgPuppet.rigData?.baselinePose || "m_mid_swing";
+  const pose = svgPuppet.rigData?.animations?.[poseName] || svgPuppet.rigData?.parts;
+  const wristValues = pose?.leftLowerArm;
+  if (!wristValues) return target.set(0, 0, 0);
+  const rigScale = config.svgRigScale * characterSettings.scale;
+  return target.set(wristValues.x * rigScale, -wristValues.y * rigScale, 0);
+}
+
+function getSvgSwingRotation() {
+  if (!state.grappled || !state.anchor) return 0;
+  const target = getVisualGrapplePoint(state.anchor, scratchRopeEnd);
+  const rope = scratchVelocityDirection.subVectors(target, state.player);
+  if (rope.lengthSq() <= 0.0001) return 0;
+  const ropeAngle = Math.atan2(rope.y, rope.x);
+  return THREE.MathUtils.clamp(ropeAngle - Math.PI * 0.5, -config.svgSwingRotationMax, config.svgSwingRotationMax);
+}
+
+function applySvgPuppetDetachedTransform() {
+  const parentScaleX = Math.abs(playerBody.scale.x) || 1;
+  const parentScaleY = Math.abs(playerBody.scale.y) || 1;
+  svgPuppet.group.scale.set(
+    svgPuppet.autoFitScale / parentScaleX,
+    svgPuppet.autoFitScale / parentScaleY,
+    1,
+  );
+  const wrist = getSvgRigWristLocal(svgPuppet.wristLocal);
+  const rotation = getSvgSwingRotation();
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const pivotX = wrist.x * svgPuppet.group.scale.x;
+  const pivotY = wrist.y * svgPuppet.group.scale.y;
+  svgPuppet.group.position.set(
+    pivotX - (pivotX * cos - pivotY * sin),
+    pivotY - (pivotX * sin + pivotY * cos),
+    0,
+  );
+  svgPuppet.group.rotation.set(0, 0, rotation - playerMesh.rotation.z);
+}
+
+function updateSvgPuppetFromRigData() {
+  const pose = getSvgRigPose();
+  if (!pose) return false;
+  const now = performance.now() / 1000;
+  svgPuppet.group.position.set(0, 0, 0);
+  svgPuppet.group.rotation.set(0, 0, 0);
+  svgPuppet.group.scale.setScalar(1);
+  for (const [key, values] of Object.entries(pose)) {
+    placeSvgPartFromRigData(svgPuppet.parts[key], values, now);
+  }
+  normalizeSvgRigHeight();
+  alignSvgRigToWrist();
+  return true;
+}
+
+function getObjectLocalHeight(object, targetBox = new THREE.Box3()) {
+  targetBox.makeEmpty();
+  object.updateWorldMatrix(true, true);
+  targetBox.setFromObject(object);
+  if (targetBox.isEmpty()) return 0;
+  return targetBox.max.y - targetBox.min.y;
+}
+
+function getPlaceholderHeight() {
+  const box = new THREE.Box3();
+  const merged = new THREE.Box3();
+  const objects = [
+    ...Object.values(playerRig.dots),
+    ...Object.values(playerLimbs),
+  ].filter((object) => object.visible);
+  for (const object of objects) {
+    box.setFromObject(object);
+    if (!box.isEmpty()) merged.union(box);
+  }
+  if (merged.isEmpty()) return 0;
+  return merged.max.y - merged.min.y;
+}
+
+function updateSvgOverlayAutoFit() {
+  if (!config.svgOverlayAutoFit || !svgPuppet.loaded || !svgPuppet.group.visible) return;
+  const placeholderHeight = getPlaceholderHeight();
+  const svgHeight = getObjectLocalHeight(svgPuppet.group);
+  if (placeholderHeight <= 0 || svgHeight <= 0) return;
+  const desiredScale = THREE.MathUtils.clamp(
+    svgPuppet.autoFitScale * (placeholderHeight * config.svgOverlayTargetHeightScale) / svgHeight,
+    0.08,
+    1.25,
+  );
+  svgPuppet.autoFitScale = THREE.MathUtils.lerp(svgPuppet.autoFitScale, desiredScale, 0.35);
 }
 
 function placeSvgSegment(part, start, end, widthScale = 1, rotationOffset = Math.PI / 2) {
@@ -1535,11 +2474,13 @@ function placeSvgPartByJoint(part, role, target, rotation = 0, scale = 1) {
   const offsetX = (local.x * cos - local.y * sin) * scale;
   const offsetY = (local.x * sin + local.y * cos) * scale;
   placeSvgPart(part, target.x - offsetX, target.y - offsetY, rotation, scale, scale);
+  applySvgAttachmentAdjustment(part);
 }
 
 function getSvgPartJointWorld(part, role, target = new THREE.Vector3()) {
   if (!part) return target.set(0, 0, 0);
   getSvgJointLocalPoint(part, role, target);
+  part.group.updateWorldMatrix(true, false);
   part.group.localToWorld(target);
   return target;
 }
@@ -1569,11 +2510,20 @@ function segmentAngle(start, end) {
 function getSvgRibbonWorldAnchor(index, target) {
   const head = svgPuppet.parts.head;
   const marker = head?.ribbonAnchors?.[0];
-  if (!config.useSvgCharacter || !svgPuppet.loaded || !head || !marker) return null;
+  if ((!config.useSvgCharacter && !config.svgCharacterOverlay) || !svgPuppet.loaded || !head || !marker) return null;
   getSvgMarkerLocalPoint(head, marker, target);
-  target.x -= (0.03 + index * 0.02) * state.facing;
-  target.y -= index * 0.04;
+  target.x += svgRibbonAnchorAdjustment.x - index * svgRibbonAnchorAdjustment.spacingX * state.facing;
+  target.y += svgRibbonAnchorAdjustment.y + index * svgRibbonAnchorAdjustment.spacingY;
   head.group.localToWorld(target);
+  return target;
+}
+
+function getGlbRibbonWorldAnchor(index, target) {
+  if (!glbCharacter.loaded || !glbCharacter.ribbonAnchor) return null;
+  glbCharacter.ribbonAnchor.getWorldPosition(target);
+  target.x += (index === 0 ? -0.024 : 0.024) * state.facing;
+  target.y -= index * 0.038;
+  target.z = state.player.z;
   return target;
 }
 
@@ -1652,52 +2602,75 @@ function getSvgSkeletonPose() {
   return pose;
 }
 
+function getPlaceholderSkeletonPose() {
+  const pose = {
+    torsoShoulder: new THREE.Vector3(),
+    torsoLower: playerRig.dots.waist.position.clone(),
+    neck: playerRig.dots.helmet.position.clone().add(new THREE.Vector3(-0.03, -0.1, 0)),
+    head: playerRig.dots.helmet.position.clone(),
+    frontShoulder: new THREE.Vector3(),
+    frontElbow: new THREE.Vector3(),
+    frontWrist: new THREE.Vector3(),
+    backShoulder: new THREE.Vector3(),
+    backElbow: new THREE.Vector3(),
+    backWrist: new THREE.Vector3(),
+    frontHip: new THREE.Vector3(),
+    frontKnee: new THREE.Vector3(),
+    frontAnkle: new THREE.Vector3(),
+    backHip: new THREE.Vector3(),
+    backKnee: new THREE.Vector3(),
+    backAnkle: new THREE.Vector3(),
+  };
+
+  getLimbJointPoints(playerLimbs.frontArm, pose.frontShoulder, pose.frontElbow, pose.frontWrist);
+  getLimbJointPoints(playerLimbs.backArm, pose.backShoulder, pose.backElbow, pose.backWrist);
+  getLimbJointPoints(playerLimbs.frontLeg, pose.frontHip, pose.frontKnee, pose.frontAnkle);
+  getLimbJointPoints(playerLimbs.backLeg, pose.backHip, pose.backKnee, pose.backAnkle);
+  pose.torsoShoulder.lerpVectors(pose.backShoulder, pose.frontShoulder, 0.58);
+  pose.torsoLower.lerpVectors(pose.backHip, pose.frontHip, 0.52);
+  pose.neck.copy(pose.torsoShoulder).add(new THREE.Vector3(-0.08, 0.34, 0));
+  pose.head.copy(pose.neck).add(new THREE.Vector3(-0.02, 0.16, 0));
+  return pose;
+}
+
 function updateSvgPuppetRig() {
-  if (!config.useSvgCharacter || !svgPuppet.loaded) return;
+  if ((!config.useSvgCharacter && !config.svgCharacterOverlay) || !svgPuppet.loaded) return;
+  if (config.svgCharacterUseRigData && updateSvgPuppetFromRigData()) return;
 
   const parts = svgPuppet.parts;
-  const pose = getSvgSkeletonPose();
+  if (parts.leftHand) parts.leftHand.group.visible = false;
+  const pose = getPlaceholderSkeletonPose();
   const torsoScale = characterSettings.torso;
   const limbScale = characterSettings.limbs;
   const shoulder = pose.torsoShoulder.clone();
 
   placeSvgPartByJoint(parts.torsoUpper, "joint-shoulder", shoulder, -0.03, torsoScale);
-  const neck = getSvgPartJointRigPoint(parts.torsoUpper, "joint-neck", svgScratchB);
-  const waist = getSvgPartJointRigPoint(parts.torsoUpper, "joint-waist", svgScratchC);
-  placeSvgPartByJoint(parts.torsoLower, "joint-waist", waist, 0.04, torsoScale);
-  const hipRoot = getSvgPartJointRigPoint(parts.torsoLower, "joint-groin", svgScratchD);
-  const torsoShoulder = getSvgPartJointRigPoint(parts.torsoUpper, "joint-shoulder", new THREE.Vector3());
-  const headNeck = neck.clone().add(new THREE.Vector3(-0.02, -0.14, 0));
-  placeSvgPartByJoint(parts.head, "joint-neck", headNeck, -0.08, characterSettings.head);
+  placeSvgPartByJoint(parts.torsoLower, "joint-waist", pose.torsoLower, 0.04, torsoScale);
+  placeSvgPartByJoint(parts.head, "joint-neck", pose.neck, -0.08, characterSettings.head);
 
-  const rightShoulder = new THREE.Vector3(torsoShoulder.x - 0.05, torsoShoulder.y - 0.02, 0);
-  const leftShoulder = new THREE.Vector3(torsoShoulder.x + 0.16, torsoShoulder.y + 0.02, 0);
-  const rightHip = new THREE.Vector3(hipRoot.x - 0.1, hipRoot.y + 0.02, 0);
-  const leftHip = new THREE.Vector3(hipRoot.x + 0.11, hipRoot.y + 0.03, 0);
+  const rightShoulder = pose.backShoulder;
+  const leftShoulder = pose.frontShoulder;
+  const rightHip = pose.backHip;
+  const leftHip = pose.frontHip;
 
   placeSvgSegmentByStartAndAngle(parts.rightUpperArm, rightShoulder, segmentAngle(pose.backShoulder, pose.backElbow), limbScale);
   const rightElbow = getSvgPartJointRigPoint(parts.rightUpperArm, "joint-elbow", new THREE.Vector3());
   placeSvgSegmentByStartAndAngle(parts.rightLowerArm, rightElbow, segmentAngle(pose.backElbow, pose.backWrist), limbScale);
-  const rightWrist = getSvgPartJointRigPoint(parts.rightLowerArm, "joint-wrist", new THREE.Vector3());
-  placeSvgPartByJoint(parts.rightHand, "joint-wrist", rightWrist, -0.35, limbScale);
+  placeSvgPartByJoint(parts.rightHand, "joint-wrist", pose.backWrist, segmentAngle(pose.backElbow, pose.backWrist), limbScale);
 
   placeSvgSegmentByStartAndAngle(parts.leftUpperArm, leftShoulder, segmentAngle(pose.frontShoulder, pose.frontElbow), limbScale);
   const leftElbow = getSvgPartJointRigPoint(parts.leftUpperArm, "joint-elbow", new THREE.Vector3());
   placeSvgSegmentByStartAndAngle(parts.leftLowerArm, leftElbow, segmentAngle(pose.frontElbow, pose.frontWrist), limbScale);
-  const leftWrist = getSvgPartJointRigPoint(parts.leftLowerArm, "joint-wrist", new THREE.Vector3());
-  placeSvgPartByJoint(parts.leftHand, "joint-wrist", leftWrist, -0.2, limbScale);
 
   placeSvgSegmentByStartAndAngle(parts.rightUpperLeg, rightHip, segmentAngle(pose.backHip, pose.backKnee), limbScale);
   const rightKnee = getSvgPartJointRigPoint(parts.rightUpperLeg, "joint-knee", new THREE.Vector3());
   placeSvgSegmentByStartAndAngle(parts.rightLowerLeg, rightKnee, segmentAngle(pose.backKnee, pose.backAnkle), limbScale);
-  const rightAnkle = getSvgPartJointRigPoint(parts.rightLowerLeg, "joint-ankle", new THREE.Vector3());
-  placeSvgPartByJoint(parts.rightFoot, "joint-foot", rightAnkle, -0.28, limbScale);
+  placeSvgPartByJoint(parts.rightFoot, "joint-foot", pose.backAnkle, segmentAngle(pose.backKnee, pose.backAnkle), limbScale);
 
   placeSvgSegmentByStartAndAngle(parts.leftUpperLeg, leftHip, segmentAngle(pose.frontHip, pose.frontKnee), limbScale);
   const leftKnee = getSvgPartJointRigPoint(parts.leftUpperLeg, "joint-knee", new THREE.Vector3());
   placeSvgSegmentByStartAndAngle(parts.leftLowerLeg, leftKnee, segmentAngle(pose.frontKnee, pose.frontAnkle), limbScale);
-  const leftAnkle = getSvgPartJointRigPoint(parts.leftLowerLeg, "joint-ankle", new THREE.Vector3());
-  placeSvgPartByJoint(parts.leftFoot, "joint-foot", leftAnkle, -0.18, limbScale);
+  placeSvgPartByJoint(parts.leftFoot, "joint-foot", pose.frontAnkle, segmentAngle(pose.frontKnee, pose.frontAnkle), limbScale);
 }
 
 const ribbonPhysics = [
@@ -1732,6 +2705,8 @@ function applyCharacterSettings() {
     characterSettings.scale,
     1,
   );
+  syncGlbCharacterTransform();
+  syncCharacterSourceVisibility();
 }
 
 function syncCharacterControls() {
@@ -1762,8 +2737,10 @@ function loadCharacterSettings() {
 function updateCharacterSetting(key, value) {
   characterSettings[key] = Number(value);
   saveCharacterSettings();
+  syncCharacterControls();
   applyCharacterSettings();
   resetRibbonPhysics();
+  syncEditorPane();
 }
 
 function resetCharacterSettings() {
@@ -1772,6 +2749,206 @@ function resetCharacterSettings() {
   syncCharacterControls();
   applyCharacterSettings();
   resetRibbonPhysics();
+  syncEditorPane();
+}
+
+function syncPixelateControls() {
+  pixelatePass.enabled = pixelateSettings.enabled;
+  pixelatePass.uniforms.intensity.value = pixelateSettings.intensity;
+  if (pixelateToggleButton) {
+    setIconButtonLabel(pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line");
+    pixelateToggleButton.setAttribute("aria-pressed", String(pixelateSettings.enabled));
+  }
+  if (pixelateIntensityInput) pixelateIntensityInput.value = String(pixelateSettings.intensity);
+  if (pixelateIntensityValue) pixelateIntensityValue.textContent = pixelateSettings.intensity.toFixed(2);
+  syncEditorPane();
+}
+
+function syncEditorPane() {
+  if (!tweakPane || syncingEditorPane) return;
+
+  editorUi.paused = state.paused;
+  editorUi.level = currentLevelId;
+  editorUi.objectType = objectTypeSelect?.value ?? editorUi.objectType;
+  editorUi.zoom = Math.round(camera.position.z);
+  editorUi.pixelate = pixelateSettings.enabled;
+  editorUi.pixelateIntensity = pixelateSettings.intensity;
+  editorUi.characterScale = characterSettings.scale;
+  editorUi.characterTorso = characterSettings.torso;
+  editorUi.characterHead = characterSettings.head;
+  editorUi.characterLimbs = characterSettings.limbs;
+  editorUi.characterRibbon = characterSettings.ribbon;
+
+  syncingEditorPane = true;
+  for (const binding of tweakPaneBindings) binding.refresh?.();
+  syncingEditorPane = false;
+}
+
+function addTweakBinding(container, object, key, options, onChange) {
+  const binding = container.addBinding(object, key, options);
+  tweakPaneBindings.push(binding);
+  binding.on("change", (event) => {
+    if (syncingEditorPane) return;
+    onChange(event.value);
+    syncEditorPane();
+  });
+  return binding;
+}
+
+async function initializeEditorPane() {
+  if (!editorPane || tweakPane) return;
+
+  let PaneConstructor = null;
+  try {
+    ({ Pane: PaneConstructor } = await import("https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js"));
+  } catch {
+    editorPane.classList.add("hidden");
+    return;
+  }
+
+  tweakPane = new PaneConstructor({
+    container: editorPane,
+    title: "Build Tools",
+  });
+  editorPanel?.classList.add("has-tweakpane");
+
+  const levelOptions = {};
+  for (const [levelId, preset] of Object.entries(levelPresets)) {
+    levelOptions[preset.label] = levelId;
+  }
+
+  addTweakBinding(tweakPane, editorUi, "paused", { label: "Build mode" }, (value) => setPaused(value));
+  addTweakBinding(tweakPane, editorUi, "level", { label: "Level", options: levelOptions }, (value) => {
+    applyLevel(value, { preserveSavedLayout: true });
+  });
+  addTweakBinding(
+    tweakPane,
+    editorUi,
+    "objectType",
+    {
+      label: "Object",
+      options: {
+        Anchor: "anchor",
+        "Slow ring": "slowmo",
+        Obstacle: "hazard",
+        "Score ring": "bonus",
+        Finish: "finish",
+      },
+    },
+    (value) => {
+      if (objectTypeSelect) objectTypeSelect.value = value;
+    },
+  );
+
+  const objectFolder = tweakPane.addFolder({ title: "Objects" });
+  objectFolder.addButton({ title: "Add selected" }).on("click", () => addEditorObject());
+  objectFolder.addButton({ title: "Remove selected" }).on("click", () => removeSelectedEditorObject());
+  objectFolder.addButton({ title: "Reset layout" }).on("click", () => {
+    resetEditorLayout();
+    reset();
+    setPaused(true);
+  });
+
+  const viewFolder = tweakPane.addFolder({ title: "View" });
+  addTweakBinding(
+    viewFolder,
+    editorUi,
+    "zoom",
+    { label: "Zoom", min: config.buildMinZoom, max: config.buildMaxZoom, step: 1 },
+    (value) => setBuildZoom(value),
+  );
+  viewFolder.addButton({ title: "Birds eye" }).on("click", () => {
+    fitBuildViewToStage();
+    syncEditorPane();
+  });
+
+  const shaderFolder = tweakPane.addFolder({ title: "Pixel Shader" });
+  addTweakBinding(shaderFolder, editorUi, "pixelate", { label: "Enabled" }, (value) => setPixelateEnabled(value));
+  addTweakBinding(
+    shaderFolder,
+    editorUi,
+    "pixelateIntensity",
+    { label: "Intensity", min: 0, max: 1, step: 0.01 },
+    (value) => setPixelateIntensity(value),
+  );
+
+  const characterFolder = tweakPane.addFolder({ title: "Character" });
+  addTweakBinding(
+    characterFolder,
+    editorUi,
+    "characterScale",
+    { label: "Scale", min: 0.72, max: 1.35, step: 0.01 },
+    (value) => updateCharacterSetting("scale", value),
+  );
+  addTweakBinding(
+    characterFolder,
+    editorUi,
+    "characterTorso",
+    { label: "Torso", min: 0.82, max: 1.28, step: 0.01 },
+    (value) => updateCharacterSetting("torso", value),
+  );
+  addTweakBinding(
+    characterFolder,
+    editorUi,
+    "characterHead",
+    { label: "Head", min: 0.78, max: 1.24, step: 0.01 },
+    (value) => updateCharacterSetting("head", value),
+  );
+  addTweakBinding(
+    characterFolder,
+    editorUi,
+    "characterLimbs",
+    { label: "Limbs", min: 0.82, max: 1.24, step: 0.01 },
+    (value) => updateCharacterSetting("limbs", value),
+  );
+  addTweakBinding(
+    characterFolder,
+    editorUi,
+    "characterRibbon",
+    { label: "Ribbon", min: 0.55, max: 1.35, step: 0.01 },
+    (value) => updateCharacterSetting("ribbon", value),
+  );
+  characterFolder.addButton({ title: "Reset character" }).on("click", () => {
+    resetCharacterSettings();
+    syncEditorPane();
+  });
+  characterFolder.addButton({ title: "Open rig editor" }).on("click", () => {
+    window.location.href = "./character-rig.html";
+  });
+
+  syncEditorPane();
+  setPaused(state.paused);
+}
+
+function savePixelateSettings() {
+  localStorage.setItem(pixelateSettingsStorageKey, JSON.stringify(pixelateSettings));
+}
+
+function loadPixelateSettings() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(pixelateSettingsStorageKey));
+    if (!stored || typeof stored !== "object") return;
+    if (typeof stored.enabled === "boolean") pixelateSettings.enabled = stored.enabled;
+    if (Number.isFinite(stored.intensity)) {
+      pixelateSettings.intensity = THREE.MathUtils.clamp(stored.intensity, 0, 1);
+    }
+  } catch {
+    localStorage.removeItem(pixelateSettingsStorageKey);
+  } finally {
+    syncPixelateControls();
+  }
+}
+
+function setPixelateEnabled(enabled) {
+  pixelateSettings.enabled = enabled;
+  savePixelateSettings();
+  syncPixelateControls();
+}
+
+function setPixelateIntensity(value) {
+  pixelateSettings.intensity = THREE.MathUtils.clamp(Number(value), 0, 1);
+  savePixelateSettings();
+  syncPixelateControls();
 }
 
 const crashPieces = [];
@@ -2153,6 +3330,91 @@ const platforms = [];
 const editableObjects = [];
 let defaultAnchorLayout = [];
 let defaultEditorLayout = null;
+let startBlock = null;
+let startPlatform = null;
+
+const levelPresets = {
+  skyline: {
+    label: "Skyline",
+    anchorVisual: "mixed",
+    policeCarAnchorIndexes: [2, 6, 10, 14],
+    start: [-2.25, 6.35],
+    finish: [250, -3.6],
+    anchors: [
+      [10.6, 9.1],
+      [22.8, 7.3],
+      [34.0, 10.0],
+      [45.6, 6.6],
+      [57.5, 10.2],
+      [69.8, 5.8],
+      [82.6, 9.5],
+      [95.9, 5.0],
+      [109.8, 8.7],
+      [124.2, 3.9],
+      [139.2, 8.0],
+      [154.8, 2.7],
+      [171.0, 7.2],
+      [187.8, 1.7],
+      [205.2, 6.4],
+      [223.0, 0.8],
+      [241.4, 5.6],
+    ],
+    hazards: [
+      [150, -4.4, 1.1, 5.7],
+      [178, -3.4, 1.3, 7.4],
+      [210, -5.4, 1.2, 5.1],
+    ],
+    bonuses: [
+      [30, 10.3],
+      [58, 10.7],
+      [86, 9.8],
+      [118, 10.2],
+      [151, 11.0],
+      [184, 10.8],
+    ],
+    slowMotionRings: [[78.5, 5.8]],
+  },
+  "vertical-descent": {
+    label: "Vertical descent",
+    anchorVisual: "policeCar",
+    start: [-2.25, 24.2],
+    finish: [192, -8.2],
+    anchors: [
+      [8, 25.6],
+      [17, 22.8],
+      [26, 24.7],
+      [36, 20.2],
+      [46, 21.8],
+      [57, 16.7],
+      [68, 18.1],
+      [80, 12.8],
+      [92, 14.4],
+      [105, 9.5],
+      [118, 10.8],
+      [132, 5.8],
+      [146, 6.6],
+      [161, 1.3],
+      [176, 2.2],
+      [190, -4.8],
+    ],
+    hazards: [
+      [52, 10.8, 1.1, 6.2],
+      [103, 3.2, 1.2, 7.2],
+      [151, -5.2, 1.1, 5.6],
+    ],
+    bonuses: [
+      [23, 25.8],
+      [62, 19.0],
+      [96, 15.6],
+      [126, 8.2],
+      [167, 3.4],
+    ],
+    slowMotionRings: [
+      [73, 14.8],
+      [138, 2.8],
+    ],
+  },
+};
 
 const DroneState = Object.freeze({
   IDLE: "IDLE",
@@ -2281,6 +3543,26 @@ function setDroneState(anchor, nextState) {
   }
 }
 
+function triggerDroneMalfunction(anchor) {
+  if (!anchor || anchor.visualType !== "drone" || anchor.malfunctioning) return;
+  anchor.malfunctioning = true;
+  anchor.used = true;
+  anchor.hitMesh.visible = false;
+  anchor.malfunctionSide = Math.random() < 0.5 ? -1 : 1;
+  anchor.malfunctionVelocity.set(
+    anchor.malfunctionSide * (0.8 + Math.random() * 1.8),
+    0.7 + Math.random() * 1.6,
+    0,
+  );
+  anchor.malfunctionSpin = anchor.malfunctionSide * (2.8 + Math.random() * 3.8);
+  anchor.blownRotor = anchor.rotors[Math.floor(Math.random() * anchor.rotors.length)] ?? null;
+  if (anchor.blownRotor) anchor.blownRotor.visible = false;
+  setDroneState(anchor, DroneState.DISABLED);
+  for (let index = 0; index < 14; index += 1) {
+    spawnDroneMalfunctionSpark(anchor, performance.now() / 1000);
+  }
+}
+
 function createDroneVisual() {
   const group = new THREE.Group();
 
@@ -2357,6 +3639,129 @@ function createDroneVisual() {
     lights: [leftLight, rightLight],
     lightGlows: [leftGlow, rightGlow],
     rotors: rotorGroups,
+    blownRotor: null,
+    grapplePoint,
+  };
+}
+
+function createPoliceHoverCarVisual() {
+  const group = new THREE.Group();
+
+  const carMaterial = new THREE.MeshBasicMaterial({ color: 0xf0d96a });
+  const whiteMaterial = new THREE.MeshBasicMaterial({ color: 0xf4f4ee });
+  const cabMaterial = new THREE.MeshBasicMaterial({ color: 0x234a7d });
+  const shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x171c26 });
+  const blackMaterial = new THREE.MeshBasicMaterial({ color: 0x050607 });
+  const grayMaterial = new THREE.MeshBasicMaterial({ color: 0x55595b });
+  const blueMaterial = new THREE.MeshBasicMaterial({ color: 0x1262ff, transparent: true, opacity: 1, depthWrite: false });
+  const redMaterial = new THREE.MeshBasicMaterial({ color: 0xff2b1c, transparent: true, opacity: 1, depthWrite: false });
+  const cyanMaterial = new THREE.MeshBasicMaterial({ color: 0x36f6ff });
+  const flameMaterial = new THREE.MeshBasicMaterial({ color: 0xff9a1f, transparent: true, opacity: 1, depthWrite: false });
+  const hotFlameMaterial = new THREE.MeshBasicMaterial({ color: 0xffff55, transparent: true, opacity: 1, depthWrite: false });
+  const smokeMaterial = new THREE.MeshBasicMaterial({ color: 0x9aa0a2, transparent: true, opacity: 0, depthWrite: false });
+
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.22, 0.18, 0.12), whiteMaterial);
+  const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.22, 0.12), cabMaterial);
+  const hood = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.32, 0.16), blackMaterial);
+  const bumper = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.16, 0.16), shadowMaterial);
+  const grille = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.4, 0.2), grayMaterial);
+  const roofBar = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.12, 0.16), blackMaterial);
+  const redBar = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.1, 0.18), redMaterial);
+  const blueBar = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.1, 0.18), blueMaterial);
+  const centerBar = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 0.18), grayMaterial);
+  const leftThruster = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.12), blackMaterial);
+  const rightThruster = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.12), blackMaterial);
+  const leftGlowJet = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.1), cyanMaterial);
+  const rightGlowJet = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.1), cyanMaterial);
+  const leftFlame = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.42, 4), flameMaterial);
+  const rightFlame = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.42, 4), flameMaterial);
+  const leftHot = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.26, 4), hotFlameMaterial);
+  const rightHot = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.26, 4), hotFlameMaterial);
+  const leftSmoke = new THREE.Mesh(new THREE.CircleGeometry(0.12, 8), smokeMaterial.clone());
+  const rightSmoke = new THREE.Mesh(new THREE.CircleGeometry(0.12, 8), smokeMaterial.clone());
+
+  roof.position.set(0, 0.34, 0.02);
+  windshield.position.set(0, 0.16, 0.08);
+  hood.position.set(0, -0.08, 0.1);
+  bumper.position.set(0, -0.34, 0.12);
+  grille.position.set(0, -0.18, 0.18);
+  roofBar.position.set(0, 0.56, 0.12);
+  redBar.position.set(-0.31, 0.57, 0.18);
+  centerBar.position.set(0, 0.57, 0.18);
+  blueBar.position.set(0.31, 0.57, 0.18);
+  leftThruster.position.set(-0.56, -0.54, 0.12);
+  rightThruster.position.set(0.56, -0.54, 0.12);
+  leftGlowJet.position.set(-0.56, -0.42, 0.18);
+  rightGlowJet.position.set(0.56, -0.42, 0.18);
+  leftFlame.position.set(-0.56, -0.86, 0.08);
+  rightFlame.position.set(0.56, -0.86, 0.08);
+  leftHot.position.set(-0.56, -0.8, 0.1);
+  rightHot.position.set(0.56, -0.8, 0.1);
+  leftSmoke.position.set(-0.56, -0.76, 0.11);
+  rightSmoke.position.set(0.56, -0.76, 0.11);
+  for (const flame of [leftFlame, rightFlame, leftHot, rightHot]) flame.rotation.z = Math.PI;
+  group.add(
+    roof,
+    windshield,
+    hood,
+    bumper,
+    grille,
+    roofBar,
+    redBar,
+    centerBar,
+    blueBar,
+    leftThruster,
+    rightThruster,
+    leftGlowJet,
+    rightGlowJet,
+    leftFlame,
+    rightFlame,
+    leftHot,
+    rightHot,
+    leftSmoke,
+    rightSmoke,
+  );
+
+  const lightGeometry = new THREE.BoxGeometry(0.14, 0.12, 0.08);
+  const leftLight = new THREE.Mesh(lightGeometry, new THREE.MeshBasicMaterial({ color: droneLightColors.IDLE }));
+  const rightLight = new THREE.Mesh(lightGeometry, new THREE.MeshBasicMaterial({ color: droneLightColors.IDLE }));
+  leftLight.position.set(-0.32, -0.28, 0.24);
+  rightLight.position.set(0.32, -0.28, 0.24);
+  group.add(leftLight, rightLight);
+
+  const grapplePoint = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.18, 0.08), droneHookMaterial);
+  grapplePoint.position.set(0, -0.64, 0.1);
+  group.add(grapplePoint);
+
+  const leftGlow = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: droneGlowTexture,
+      color: droneLightColors.IDLE,
+      transparent: true,
+      opacity: 0.34,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  const rightGlow = leftGlow.clone();
+  leftGlow.position.copy(leftLight.position);
+  rightGlow.position.copy(rightLight.position);
+  leftGlow.position.z = 0.14;
+  rightGlow.position.z = 0.14;
+  leftGlow.scale.setScalar(0.72);
+  rightGlow.scale.setScalar(0.72);
+  group.add(leftGlow, rightGlow);
+
+  group.renderOrder = 15;
+  return {
+    group,
+    lights: [leftLight, rightLight],
+    lightGlows: [leftGlow, rightGlow],
+    rotors: [],
+    sirens: { red: redBar, blue: blueBar },
+    flames: [leftFlame, rightFlame, leftHot, rightHot],
+    smokes: [leftSmoke, rightSmoke],
     grapplePoint,
   };
 }
@@ -2375,7 +3780,7 @@ function setEditorObjectSelected(object, selected) {
   const scale = selected ? 1.22 : 1;
   object.hitMesh?.scale.setScalar(scale);
   if (object.hitMesh?.material) {
-    object.hitMesh.material.opacity = selected ? 0.14 : 0;
+    object.hitMesh.material.opacity = selected && !state.paused ? 0.14 : 0;
   }
   if (object.type === "anchor") setDroneState(object, selected ? DroneState.TARGETED : DroneState.IDLE);
 }
@@ -2465,7 +3870,10 @@ function removeEditableObject(object) {
 }
 
 function addAnchor(x, y) {
-  const drone = createDroneVisual();
+  const visualType = getAnchorVisualType(anchors.length);
+  const drone = visualType === "policeCar"
+    ? createPoliceHoverCarVisual()
+    : createDroneVisual();
   drone.group.position.set(x, y, 0);
   addGameplay(drone.group);
 
@@ -2480,6 +3888,7 @@ function addAnchor(x, y) {
 
   const anchor = {
     type: "anchor",
+    visualType,
     mesh: drone.group,
     hitMesh,
     position: hitMesh.position,
@@ -2489,13 +3898,24 @@ function addAnchor(x, y) {
     lights: drone.lights,
     lightGlows: drone.lightGlows,
     rotors: drone.rotors,
+    blownRotor: drone.blownRotor ?? null,
+    sirens: drone.sirens ?? null,
+    flames: drone.flames ?? [],
+    smokes: drone.smokes ?? [],
     grapplePoint: drone.grapplePoint,
     debugAnchor,
     visualOffset: new THREE.Vector3(),
     visualVelocity: new THREE.Vector3(),
     impactOffset: new THREE.Vector3(),
     impactVelocity: new THREE.Vector3(),
+    malfunctioning: false,
+    malfunctionSide: Math.random() < 0.5 ? -1 : 1,
+    malfunctionVelocity: new THREE.Vector3(),
+    malfunctionSpin: 0,
     releasedAt: -100,
+    visualSeed: anchors.length * 1.731 + (visualType === "policeCar" ? 7.2 : 0),
+    nextSputterAt: 0.8 + anchors.length * 0.47,
+    sputterUntil: -100,
   };
   anchors.push(anchor);
   registerEditableObject(anchor);
@@ -2613,21 +4033,29 @@ function updateSpeedScore(dt, now) {
   syncScore();
 }
 
-function addStartBlock() {
+function moveStartBlock(x, y) {
+  if (!startBlock || !startPlatform) return;
+  const blockTop = y + 2.5;
+  startBlock.block.position.set(x - 1.8, blockTop - startBlock.blockHeight * 0.5, -0.05);
+  startBlock.edge.position.set(x - 0.51, blockTop - startBlock.blockHeight * 0.5, 0.02);
+  startBlock.ledge.position.set(x, y, 0.03);
+  startPlatform.x = x;
+  startPlatform.y = y;
+}
+
+function addStartBlock(x = -2.25, y = 6.35) {
   const blockHeight = 26;
-  const blockTop = 8.85;
   const block = new THREE.Mesh(new THREE.BoxGeometry(2.5, blockHeight, 1.2), startBlockMaterial);
-  block.position.set(-4.05, blockTop - blockHeight * 0.5, -0.05);
   addGameplay(block);
 
   const edge = new THREE.Mesh(new THREE.BoxGeometry(0.08, blockHeight, 1.28), startBlockEdgeMaterial);
-  edge.position.set(-2.76, blockTop - blockHeight * 0.5, 0.02);
   addGameplay(edge);
 
   const ledge = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.12, 1.25), startBlockEdgeMaterial);
-  ledge.position.set(-2.25, 6.35, 0.03);
   addGameplay(ledge);
-  addPlatform(-2.25, 6.35, 1.0);
+  startPlatform = addPlatform(x, y, 1.0);
+  startBlock = { block, edge, ledge, blockHeight };
+  moveStartBlock(x, y);
 }
 
 function addFinishBuilding() {
@@ -2678,54 +4106,38 @@ function addFinishBuilding() {
 function buildCourse() {
   addStartBlock();
   addFinishBuilding();
-
-  defaultAnchorLayout = [
-    [10.6, 9.1],
-    [22.8, 7.3],
-    [34.0, 10.0],
-    [45.6, 6.6],
-    [57.5, 10.2],
-    [69.8, 5.8],
-    [82.6, 9.5],
-    [95.9, 5.0],
-    [109.8, 8.7],
-    [124.2, 3.9],
-    [139.2, 8.0],
-    [154.8, 2.7],
-    [171.0, 7.2],
-    [187.8, 1.7],
-    [205.2, 6.4],
-    [223.0, 0.8],
-    [241.4, 5.6],
-  ];
-
-  defaultAnchorLayout.forEach(([x, y]) => addAnchor(x, y));
-
-  [
-    [150, -4.4, 1.1, 5.7],
-    [178, -3.4, 1.3, 7.4],
-    [210, -5.4, 1.2, 5.1],
-  ].forEach(([x, y, w, h]) => addHazard(x, y, w, h));
-
-  [
-    [30, 10.3],
-    [58, 10.7],
-    [86, 9.8],
-    [118, 10.2],
-    [151, 11.0],
-    [184, 10.8],
-  ].forEach(([x, y]) => addBonus(x, y));
-
-  addSlowMotionRing(78.5, 5.8);
-  defaultEditorLayout = serializeEditorLayout();
-  loadEditorLayout();
+  applyLevel(currentLevelId, { preserveSavedLayout: true, resetRun: false });
 }
 
 buildCourse();
 
+function getLevelPreset(levelId = currentLevelId) {
+  return levelPresets[levelId] || levelPresets.skyline;
+}
+
+function getAnchorVisualType(index = anchors.length, levelId = currentLevelId) {
+  const preset = getLevelPreset(levelId);
+  if (preset.anchorVisual === "mixed") {
+    return preset.policeCarAnchorIndexes?.includes(index) ? "policeCar" : "drone";
+  }
+  return preset.anchorVisual === "policeCar" ? "policeCar" : "drone";
+}
+
+function getCurrentEditorLayoutStorageKey() {
+  return `${editorLayoutStoragePrefix}${currentLevelId}`;
+}
+
+function getLevelStart(levelId = currentLevelId) {
+  const [x, y] = getLevelPreset(levelId).start;
+  return new THREE.Vector3(x - 0.1, y + config.platformStandOffset, 0);
+}
+
 function serializeEditorLayout() {
   const finish = editableObjects.find((object) => object.type === "finish");
+  const preset = getLevelPreset();
   return {
+    level: currentLevelId,
+    start: startPlatform ? [Number(startPlatform.x.toFixed(2)), Number(startPlatform.y.toFixed(2))] : preset.start,
     anchors: anchors.map((anchor) => [Number(anchor.position.x.toFixed(2)), Number(anchor.position.y.toFixed(2))]),
     hazards: hazards.map((hazard) => [
       Number(hazard.mesh.position.x.toFixed(2)),
@@ -2746,11 +4158,10 @@ function serializeEditorLayout() {
 }
 
 function saveEditorLayout() {
-  localStorage.setItem(editorLayoutStorageKey, JSON.stringify(serializeEditorLayout()));
-  localStorage.setItem(anchorStorageKey, JSON.stringify(anchors.map((anchor) => [
-    Number(anchor.position.x.toFixed(2)),
-    Number(anchor.position.y.toFixed(2)),
-  ])));
+  const serialized = JSON.stringify(serializeEditorLayout());
+  localStorage.setItem(getCurrentEditorLayoutStorageKey(), serialized);
+  localStorage.removeItem(editorLayoutStorageKey);
+  localStorage.removeItem(anchorStorageKey);
 }
 
 function clearEditableType(type) {
@@ -2777,6 +4188,13 @@ function applyEditorLayout(layout) {
   if (!layout || typeof layout !== "object") return;
   selectEditorObject(null);
   state.draggedObject = null;
+  const preset = getLevelPreset();
+
+  if (Array.isArray(layout.start) && layout.start.length >= 2) {
+    moveStartBlock(Number(layout.start[0]), Number(layout.start[1]));
+  } else {
+    moveStartBlock(Number(preset.start[0]), Number(preset.start[1]));
+  }
 
   clearEditableType("anchor");
   clearEditableType("hazard");
@@ -2816,34 +4234,57 @@ function applyEditorLayout(layout) {
   }
 }
 
-function loadEditorLayout() {
-  const stored = localStorage.getItem(editorLayoutStorageKey);
-  if (!stored) {
-    const legacyAnchors = localStorage.getItem(anchorStorageKey);
-    if (!legacyAnchors) return;
+function isLayoutForCurrentLevel(layout) {
+  return Boolean(layout && typeof layout === "object" && layout.level === currentLevelId);
+}
 
-    try {
-      const anchorsOnly = JSON.parse(legacyAnchors);
-      if (Array.isArray(anchorsOnly)) applyEditorLayout({ ...defaultEditorLayout, anchors: anchorsOnly });
-    } catch {
-      localStorage.removeItem(anchorStorageKey);
-    }
-    return;
-  }
+function loadEditorLayout() {
+  const stored = localStorage.getItem(getCurrentEditorLayoutStorageKey());
+  if (!stored) return;
 
   try {
     const layout = JSON.parse(stored);
+    if (!isLayoutForCurrentLevel(layout)) {
+      localStorage.removeItem(getCurrentEditorLayoutStorageKey());
+      return;
+    }
     applyEditorLayout(layout);
   } catch {
-    localStorage.removeItem(editorLayoutStorageKey);
+    localStorage.removeItem(getCurrentEditorLayoutStorageKey());
   }
 }
 
 function resetEditorLayout() {
   localStorage.removeItem(anchorStorageKey);
   localStorage.removeItem(editorLayoutStorageKey);
+  localStorage.removeItem(getCurrentEditorLayoutStorageKey());
   applyEditorLayout(defaultEditorLayout);
   releaseGrapple();
+}
+
+function applyLevel(levelId, { preserveSavedLayout = true, resetRun = true } = {}) {
+  releaseGrapple();
+  currentLevelId = levelPresets[levelId] ? levelId : "skyline";
+  localStorage.setItem(levelSelectionStorageKey, currentLevelId);
+  if (levelSelect) levelSelect.value = currentLevelId;
+  const preset = getLevelPreset();
+  defaultAnchorLayout = preset.anchors;
+  defaultEditorLayout = {
+    level: currentLevelId,
+    start: preset.start,
+    anchors: preset.anchors,
+    hazards: preset.hazards,
+    bonuses: preset.bonuses,
+    slowMotionRings: preset.slowMotionRings,
+    finish: preset.finish,
+  };
+  applyEditorLayout(defaultEditorLayout);
+  if (preserveSavedLayout) loadEditorLayout();
+  if (resetRun) {
+    reset({ resetLevelStats: true });
+    setPaused(true);
+  }
+  syncEditorPane();
 }
 
 function addEditorObject() {
@@ -2881,6 +4322,8 @@ function resize() {
   const width = window.innerWidth;
   const height = window.innerHeight;
   renderer.setSize(width, height, false);
+  composer.setSize(width, height);
+  pixelatePass.uniforms.u_resolution.value.set(width, height);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
 }
@@ -2977,6 +4420,7 @@ function updateBuildZoomControl() {
   buildZoomInput.min = String(config.buildMinZoom);
   buildZoomInput.max = String(config.buildMaxZoom);
   buildZoomInput.value = String(Math.round(camera.position.z));
+  syncEditorPane();
 }
 
 function setBuildZoom(value) {
@@ -3115,7 +4559,7 @@ function reset({ resetLevelStats = false } = {}) {
     state.deaths = 0;
     state.highestMultiplier = 1;
   }
-  state.player.set(-2.35, 7.15, 0);
+  state.player.copy(getLevelStart());
   state.previousPlayer.copy(state.player);
   state.velocity.set(0, 0, 0);
   state.hasLaunched = false;
@@ -3140,7 +4584,7 @@ function reset({ resetLevelStats = false } = {}) {
   state.multiplier = 1;
   state.multiplierExpiresAt = -100;
   state.multiplierActions.clear();
-  state.nextScoreX = 16;
+  state.nextScoreX = state.player.x + 18;
   state.gameOver = false;
   state.finished = false;
   state.levelCompleteShown = false;
@@ -3170,7 +4614,14 @@ function reset({ resetLevelStats = false } = {}) {
     anchor.visualVelocity.set(0, 0, 0);
     anchor.impactOffset.set(0, 0, 0);
     anchor.impactVelocity.set(0, 0, 0);
+    anchor.malfunctioning = false;
+    anchor.malfunctionVelocity.set(0, 0, 0);
+    anchor.malfunctionSpin = 0;
+    anchor.blownRotor = null;
+    anchor.hitMesh.visible = true;
+    for (const rotor of anchor.rotors) rotor.visible = true;
     anchor.mesh.position.copy(anchor.position);
+    anchor.mesh.rotation.set(0, 0, 0);
     anchor.debugAnchor.visible = config.debugShowDroneAnchors;
     setDroneState(anchor, DroneState.IDLE);
   });
@@ -3194,7 +4645,7 @@ function reset({ resetLevelStats = false } = {}) {
   hookWrap.visible = false;
   targetGlow.visible = false;
   targetRing.visible = false;
-  playerBody.visible = true;
+  syncCharacterSourceVisibility();
   for (const piece of crashPieces) {
     piece.mesh.visible = false;
     piece.mesh.material.opacity = 1;
@@ -3208,14 +4659,76 @@ function reset({ resetLevelStats = false } = {}) {
   }
 }
 
+function refreshLucideIcons() {
+  window.lucide?.createIcons?.({
+    attrs: {
+      "aria-hidden": "true",
+      "stroke-width": 2.25,
+    },
+  });
+}
+
+function setIconButtonLabel(button, label, iconName = null) {
+  if (!button) return;
+
+  const currentIcon = iconName ?? button.querySelector("[data-lucide]")?.dataset.lucide;
+  if (!currentIcon) {
+    button.textContent = label;
+    return;
+  }
+
+  button.innerHTML = `<span data-lucide="${currentIcon}" aria-hidden="true"></span><span>${label}</span>`;
+  refreshLucideIcons();
+}
+
+function decorateControls() {
+  const buttons = [
+    [togglePauseButton, state.paused ? "Play" : "Pause", state.paused ? "play" : "pause"],
+    [addObjectButton, "Add", "plus"],
+    [removeObjectButton, "Remove", "trash-2"],
+    [zoomOutButton, "", "minus"],
+    [zoomInButton, "", "plus"],
+    [zoomFitButton, "Birds eye", "scan-eye"],
+    [pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line"],
+    [characterEditorResetButton, "Reset character", "undo-2"],
+    [resetAnchorsButton, "Reset layout", "map"],
+  ];
+
+  for (const [button, label, icon] of buttons) setIconButtonLabel(button, label, icon);
+  refreshLucideIcons();
+}
+
 function setPaused(paused) {
   state.paused = paused;
-  togglePauseButton.textContent = state.paused ? "Play" : "Pause";
-  buildTools.classList.toggle("hidden", !state.paused);
+  setIconButtonLabel(togglePauseButton, state.paused ? "Play" : "Pause", state.paused ? "play" : "pause");
+  buildTools.classList.toggle("hidden", !state.paused || Boolean(tweakPane));
+  editorPane?.classList.toggle("hidden", !state.paused);
+  applyBuildVisualMode(state.paused);
   if (state.paused) updateBuildZoomControl();
+  setEditorObjectSelected(state.selectedObject, Boolean(state.selectedObject));
   if (!state.paused) {
     selectEditorObject(null);
     state.draggedObject = null;
+  }
+  syncEditorPane();
+}
+
+function applyBuildVisualMode(enabled) {
+  scene.fog = enabled ? null : gameplayFog;
+  for (const layerName of buildModeHiddenAtmosphereLayers) {
+    const layer = parallaxLayers[layerName];
+    if (!layer) continue;
+    if (enabled) {
+      if (!buildModeLayerState.has(layerName)) buildModeLayerState.set(layerName, layer.enabled);
+      layer.enabled = false;
+      layer.group.visible = false;
+    } else {
+      layer.enabled = buildModeLayerState.has(layerName)
+        ? buildModeLayerState.get(layerName)
+        : layer.enabled;
+      layer.group.visible = layer.enabled;
+      buildModeLayerState.delete(layerName);
+    }
   }
 }
 
@@ -3353,6 +4866,7 @@ function findAnchorFor(player, velocity, lastReleasedAnchor) {
     Math.abs(velocity.x) < config.regrabSameAnchorHorizontalSpeed;
 
   for (const anchor of anchors) {
+    if (anchor.malfunctioning || anchor.droneState === DroneState.DISABLED) continue;
     const dx = anchor.position.x - player.x;
     const dy = anchor.position.y - player.y;
 
@@ -3389,6 +4903,7 @@ function findGuideAnchor() {
   let bestDistance = Infinity;
 
   for (const anchor of anchors) {
+    if (anchor.malfunctioning || anchor.droneState === DroneState.DISABLED) continue;
     const distance = state.player.distanceTo(anchor.position);
     if (distance > config.grappleRange) continue;
 
@@ -3412,6 +4927,7 @@ function findHookHit() {
   }
 
   for (const anchor of anchors) {
+    if (anchor.malfunctioning || anchor.droneState === DroneState.DISABLED) continue;
     const playerDistance = state.player.distanceTo(anchor.position);
     if (playerDistance > config.maxRopeLength + 0.75) continue;
 
@@ -3532,7 +5048,11 @@ function releaseGrapple({ pop = false } = {}) {
   if (hadAnchor) state.lastReleasedAnchor = releasedAnchor;
   if (state.anchor) {
     state.anchor.releasedAt = performance.now() / 1000;
-    setDroneState(state.anchor, DroneState.RELEASED);
+    if (state.anchor.visualType === "drone" && Math.random() < config.droneMalfunctionChance) {
+      triggerDroneMalfunction(state.anchor);
+    } else {
+      setDroneState(state.anchor, DroneState.RELEASED);
+    }
   }
   state.anchor = null;
   state.stuntAnchor = null;
@@ -3823,7 +5343,9 @@ function updateDroneVisuals(now, dt) {
   const targetedAnchor = state.grappled ? state.anchor : state.hookActive ? state.anchor : findGuideAnchor();
 
   for (const anchor of anchors) {
-    if (anchor === state.anchor && state.grappled) {
+    if (anchor.malfunctioning) {
+      setDroneState(anchor, DroneState.DISABLED);
+    } else if (anchor === state.anchor && state.grappled) {
       setDroneState(anchor, DroneState.GRAPPLED);
     } else if (anchor === targetedAnchor && !state.grappled) {
       setDroneState(anchor, DroneState.TARGETED);
@@ -3833,9 +5355,9 @@ function updateDroneVisuals(now, dt) {
       setDroneState(anchor, DroneState.IDLE);
     }
 
-    const hover = Math.sin(now * 2.8 + anchor.index * 0.9) * config.droneHoverAmount;
+    const hover = anchor.malfunctioning ? 0 : Math.sin(now * 2.8 + anchor.index * 0.9) * config.droneHoverAmount;
     const tensionTarget = scratchVelocityDirection.set(0, 0, 0);
-    if (anchor === state.anchor && state.grappled) {
+    if (!anchor.malfunctioning && anchor === state.anchor && state.grappled) {
       tensionTarget.subVectors(state.player, anchor.position);
       const distance = Math.max(tensionTarget.length(), 0.001);
       tensionTarget.multiplyScalar(1 / distance);
@@ -3843,7 +5365,14 @@ function updateDroneVisuals(now, dt) {
       tensionTarget.multiplyScalar(config.droneTensionStrength * ropeTension);
     }
 
-    anchor.visualOffset.lerp(tensionTarget, 0.18);
+    if (anchor.malfunctioning) {
+      anchor.malfunctionVelocity.y += config.gravity * 0.18 * dt;
+      anchor.visualOffset.addScaledVector(anchor.malfunctionVelocity, dt);
+      anchor.impactOffset.set(0, 0, 0);
+      anchor.impactVelocity.set(0, 0, 0);
+    } else {
+      anchor.visualOffset.lerp(tensionTarget, 0.18);
+    }
     anchor.impactVelocity.addScaledVector(anchor.impactOffset, -18 * dt);
     anchor.impactVelocity.multiplyScalar(Math.pow(0.035, dt));
     anchor.impactOffset.addScaledVector(anchor.impactVelocity, dt);
@@ -3858,17 +5387,28 @@ function updateDroneVisuals(now, dt) {
     );
 
     const tilt = THREE.MathUtils.clamp((anchor.visualOffset.x + anchor.impactOffset.x) * -0.9, -0.22, 0.22);
-    anchor.mesh.rotation.z = tilt + Math.sin(now * 1.8 + anchor.index) * 0.025;
-    anchor.mesh.rotation.y = Math.sin(now * 1.3 + anchor.index) * 0.08;
+    anchor.mesh.rotation.z = anchor.malfunctioning
+      ? anchor.mesh.rotation.z + anchor.malfunctionSpin * dt
+      : tilt + Math.sin(now * 1.8 + anchor.index) * 0.025;
+    anchor.mesh.rotation.y = anchor.malfunctioning
+      ? Math.sin(now * 7.2 + anchor.index) * 0.28
+      : Math.sin(now * 1.3 + anchor.index) * 0.08;
     const stateScale =
       anchor.droneState === DroneState.TARGETED ? 1.1 : anchor.droneState === DroneState.GRAPPLED ? 1.14 : 1;
     const currentScale = anchor.mesh.scale.x + (stateScale - anchor.mesh.scale.x) * 0.12;
     anchor.mesh.scale.setScalar(currentScale);
 
-    const rotorSpeed = anchor.droneState === DroneState.GRAPPLED ? 22 : anchor.droneState === DroneState.TARGETED ? 18 : 14;
+    const rotorSpeed = anchor.malfunctioning
+      ? 6
+      : anchor.droneState === DroneState.GRAPPLED ? 22 : anchor.droneState === DroneState.TARGETED ? 18 : 14;
     for (const rotor of anchor.rotors) {
+      if (rotor === anchor.blownRotor) continue;
       rotor.rotation.z = now * rotorSpeed * (rotor.position.x < 0 ? -1 : 1);
     }
+    if ((anchor.droneState === DroneState.GRAPPLED || anchor.malfunctioning) && Math.random() < dt * config.droneMalfunctionSparkChance) {
+      spawnDroneMalfunctionSpark(anchor, now);
+    }
+    updatePoliceCarEffects(anchor, now);
 
     const lightGlowOpacity =
       anchor.droneState === DroneState.IDLE ? 0.34 : anchor.droneState === DroneState.TARGETED ? 0.46 : 0.56;
@@ -3878,6 +5418,41 @@ function updateDroneVisuals(now, dt) {
       glow.scale.setScalar(glowScale);
     }
     anchor.debugAnchor.visible = config.debugShowDroneAnchors;
+  }
+}
+
+function updatePoliceCarEffects(anchor, now) {
+  if (!anchor.sirens && !anchor.flames.length && !anchor.smokes.length) return;
+  const sirenPhase = Math.floor((now * 3.8 + anchor.visualSeed) % 2);
+  const bright = 1;
+  const dim = 0.38;
+  if (anchor.sirens) {
+    anchor.sirens.red.material.opacity = sirenPhase === 0 ? bright : dim;
+    anchor.sirens.blue.material.opacity = sirenPhase === 1 ? bright : dim;
+    anchor.sirens.red.scale.setScalar(sirenPhase === 0 ? 1.12 : 0.96);
+    anchor.sirens.blue.scale.setScalar(sirenPhase === 1 ? 1.12 : 0.96);
+  }
+
+  if (now >= anchor.nextSputterAt) {
+    const randomish = Math.sin((anchor.visualSeed + now * 12.9898) * 78.233) * 43758.5453;
+    const amount = randomish - Math.floor(randomish);
+    anchor.sputterUntil = now + 0.18 + amount * 0.32;
+    anchor.nextSputterAt = now + 1.1 + amount * 2.4 + (anchor.index % 3) * 0.23;
+  }
+
+  const sputtering = now < anchor.sputterUntil;
+  const flicker = 0.82 + Math.sin(now * 28 + anchor.visualSeed) * 0.18;
+  for (const flame of anchor.flames) {
+    flame.visible = !sputtering;
+    flame.material.opacity = sputtering ? 0 : THREE.MathUtils.clamp(flicker, 0.48, 1);
+    flame.scale.set(0.85 + flicker * 0.24, 0.9 + flicker * 0.34, 1);
+  }
+  for (const [index, smoke] of anchor.smokes.entries()) {
+    const progress = THREE.MathUtils.clamp((anchor.sputterUntil - now) / 0.5, 0, 1);
+    smoke.visible = sputtering || progress > 0;
+    smoke.material.opacity = progress * 0.58;
+    smoke.position.y = -0.76 + (1 - progress) * 0.28 + Math.sin(now * 7 + index + anchor.visualSeed) * 0.025;
+    smoke.scale.setScalar(0.75 + (1 - progress) * 0.85);
   }
 }
 
@@ -3925,8 +5500,14 @@ function getVisualGrapplePoint(anchor, target = scratchRopeEnd) {
 }
 
 function getRopeOrigin(target = scratchRopeStart) {
-  if (config.useSvgCharacter && svgPuppet.loaded && svgPuppet.parts.leftHand) {
-    svgPuppet.parts.leftHand.group.getWorldPosition(target);
+  if (glbCharacter.loaded && glbCharacter.leftWristAnchor) {
+    glbCharacter.leftWristAnchor.getWorldPosition(target);
+    target.z = state.player.z;
+    return target;
+  }
+  if ((config.useSvgCharacter || config.svgCharacterOverlay) && svgPuppet.loaded && svgPuppet.parts.leftLowerArm) {
+    svgPuppet.group.updateWorldMatrix(true, true);
+    getSvgPartJointWorld(svgPuppet.parts.leftLowerArm, "joint-wrist", target);
     target.z = state.player.z;
     return target;
   }
@@ -3960,8 +5541,75 @@ function spawnRopeSpark(start, direction, distance, burst = false) {
   spark.velocity.y += 0.6 + Math.random() * 1.4;
   spark.mesh.rotation.z = Math.random() * Math.PI;
   spark.mesh.scale.setScalar(0.75 + Math.random() * 0.8);
+  spark.mesh.material.color.setHex(Math.random() < 0.25 ? 0xffffff : 0x6cf3ff);
   spark.mesh.material.opacity = 0.9;
   spark.mesh.visible = true;
+}
+
+function spawnPhysicsSpark(position, velocity, {
+  color = 0xffffff,
+  life = 0.38,
+  size = 1,
+  opacity = 0.96,
+} = {}) {
+  const spark = ropeSparks[nextRopeSpark];
+  nextRopeSpark = (nextRopeSpark + 1) % ropeSparks.length;
+  spark.life = life * (0.78 + Math.random() * 0.44);
+  spark.maxLife = spark.life;
+  spark.mesh.position.copy(position);
+  spark.mesh.position.z = position.z ?? 0.42;
+  spark.velocity.copy(velocity);
+  spark.mesh.material.color.setHex(color);
+  spark.mesh.material.opacity = opacity;
+  spark.mesh.rotation.z = Math.random() * Math.PI;
+  spark.mesh.scale.setScalar(size * (0.7 + Math.random() * 0.8));
+  spark.mesh.visible = true;
+}
+
+function spawnAnchorPlasmaSpark(anchor, now) {
+  const center = getVisualGrapplePoint(anchor, playerRigScratchA);
+  const angle = now * 7.5 + Math.random() * Math.PI * 2;
+  const radius = 0.42 + Math.random() * 0.28;
+  const position = playerRigScratchB.set(
+    center.x + Math.cos(angle) * radius,
+    center.y + Math.sin(angle) * radius,
+    0.48,
+  );
+  const tangent = playerRigScratchC.set(-Math.sin(angle), Math.cos(angle), 0);
+  const outward = scratchPerpDirection.set(Math.cos(angle), Math.sin(angle), 0);
+  const velocity = new THREE.Vector3()
+    .copy(tangent)
+    .multiplyScalar(1.2 + Math.random() * 1.8)
+    .addScaledVector(outward, 0.5 + Math.random() * 1.3)
+    .addScaledVector(state.velocity, 0.025);
+  velocity.y += 0.6 + Math.random() * 1.4;
+  spawnPhysicsSpark(position, velocity, {
+    color: Math.random() < 0.72 ? 0xffffff : 0x7eefff,
+    life: 0.22 + Math.random() * 0.22,
+    size: 0.75,
+    opacity: 1,
+  });
+}
+
+function spawnDroneMalfunctionSpark(anchor, now) {
+  if (!anchor || anchor.visualType !== "drone") return;
+  const side = anchor.malfunctionSide || 1;
+  const position = playerRigScratchA.set(
+    anchor.mesh.position.x + side * (0.62 + Math.random() * 0.18),
+    anchor.mesh.position.y + (Math.random() - 0.5) * 0.34,
+    0.5,
+  );
+  const velocity = playerRigScratchB.set(
+    side * (1.4 + Math.random() * 2.6),
+    0.8 + Math.random() * 2.6,
+    0,
+  );
+  spawnPhysicsSpark(position, velocity, {
+    color: Math.random() < 0.78 ? 0xffffff : 0x79e8ff,
+    life: 0.26 + Math.random() * 0.26,
+    size: 0.85,
+    opacity: 1,
+  });
 }
 
 function maybeSpawnRopeSparks(dt, start, direction, distance) {
@@ -4070,7 +5718,7 @@ function renderRope(dt) {
 }
 
 function updateHookWrap(dt, now) {
-  if (!state.grappled || !state.anchor || state.hookWrapPulse <= 0) {
+  if (!state.grappled || !state.anchor) {
     hookWrap.visible = false;
     return;
   }
@@ -4078,10 +5726,13 @@ function updateHookWrap(dt, now) {
   state.hookWrapPulse = Math.max(0, state.hookWrapPulse - dt * 4.8);
   const progress = 1 - state.hookWrapPulse;
   hookWrap.position.copy(getVisualGrapplePoint(state.anchor));
-  hookWrap.rotation.z = -progress * Math.PI * 2.3 + now * 0.8;
-  hookWrap.scale.setScalar(0.45 + progress * 0.75);
-  hookWrap.material.opacity = state.hookWrapPulse * 0.9;
-  hookWrap.visible = state.hookWrapPulse > 0.02;
+  hookWrap.rotation.z = -progress * Math.PI * 2.3 + now * 3.4;
+  hookWrap.scale.setScalar(0.58 + Math.sin(now * 14) * 0.035 + state.hookWrapPulse * 0.38);
+  hookWrap.material.opacity = 0.34 + state.hookWrapPulse * 0.55;
+  hookWrap.visible = true;
+  if (Math.random() < dt * config.anchorPlasmaSparkChance) {
+    spawnAnchorPlasmaSpark(state.anchor, now);
+  }
 }
 
 function updateSpeedLines(now) {
@@ -4179,8 +5830,16 @@ function updateCamera(dt) {
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
   const targetX = state.player.x + config.cameraLead;
   const targetY = state.player.y + config.cameraVerticalLead;
+  const speedZoom = THREE.MathUtils.smoothstep(speed, 2, 30);
+  const lowAltitudeZoom = 1 - THREE.MathUtils.smoothstep(
+    config.bottomDeathY + 2.4,
+    config.bottomDeathY + 10,
+    state.player.y,
+  );
   const targetZ = THREE.MathUtils.clamp(
-    config.cameraBaseZoom + Math.max(0, speed - 8) * config.cameraSpeedZoom,
+    config.cameraBaseZoom
+      + speedZoom * (config.cameraMaxZoom - config.cameraBaseZoom) * config.cameraSpeedZoom
+      + lowAltitudeZoom * 10,
     config.cameraBaseZoom,
     config.cameraMaxZoom,
   );
@@ -4262,6 +5921,14 @@ function getLimbPoint(limb, pointIndex, target) {
   return target;
 }
 
+function getLimbJointPoints(limb, start, bend, end) {
+  const positions = limb.geometry.attributes.position;
+  start.set(positions.getX(0), positions.getY(0), positions.getZ(0));
+  bend.set(positions.getX(1), positions.getY(1), positions.getZ(1));
+  const endIndex = Math.min(2, positions.count - 1);
+  end.set(positions.getX(endIndex), positions.getY(endIndex), positions.getZ(endIndex));
+}
+
 const playerRigScratchA = new THREE.Vector3();
 const playerRigScratchB = new THREE.Vector3();
 const playerRigScratchC = new THREE.Vector3();
@@ -4270,6 +5937,37 @@ function placeDotBetween(dot, start, end, amount, offsetX = 0, offsetY = 0) {
   dot.position.lerpVectors(start, end, amount);
   dot.position.x += offsetX;
   dot.position.y += offsetY;
+}
+
+function placePlate(plate, x, y, rotation = 0, width = null, height = null) {
+  if (!plate) return;
+  plate.position.set(x, y, plate.position.z);
+  plate.rotation.z = rotation;
+  if (width !== null && height !== null) plate.scale.set(width, height, 1);
+}
+
+function placeRing(ring, x, y, radius, rotation = 0) {
+  if (!ring) return;
+  ring.position.set(x, y, ring.position.z);
+  ring.rotation.z = rotation;
+  ring.scale.set(radius, radius, 1);
+}
+
+function placePlateBetween(plate, start, end, width, lengthScale = 0.72, offset = 0) {
+  if (!plate) return;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.max(Math.hypot(dx, dy) * lengthScale, 0.001);
+  const normalX = -dy / Math.max(Math.hypot(dx, dy), 0.001);
+  const normalY = dx / Math.max(Math.hypot(dx, dy), 0.001);
+  placePlate(
+    plate,
+    (start.x + end.x) * 0.5 + normalX * offset,
+    (start.y + end.y) * 0.5 + normalY * offset,
+    Math.atan2(dy, dx) - Math.PI / 2,
+    width,
+    length,
+  );
 }
 
 function localBodyPointToWorld(x, y, rotation = 0, target = playerRigScratchC) {
@@ -4298,6 +5996,103 @@ function worldPointToLocalBody(point, rotation = 0) {
   ];
 }
 
+function updatePlayerRibbonPhysics(now, dt, flourishFlip = 0) {
+  if (config.debugGlbNeutralOnly) {
+    for (const line of [
+      playerRig.lines.scarfTop,
+      playerRig.lines.scarfBottom,
+      playerRig.lines.scarfTopShadow,
+      playerRig.lines.scarfBottomShadow,
+    ]) {
+      line.visible = false;
+    }
+    return;
+  }
+
+  const idleBreath = state.playerAnimation === "idleHang" ? Math.sin(now * 3.2) : 0;
+  const breathY = idleBreath * 0.035;
+  const ribbonTimeScale = isSlowMotionActive() ? config.slowMotionForwardScale : 1;
+  const ribbonDt = Math.min(dt * ribbonTimeScale, 0.033);
+  const idleHang = !state.hasLaunched || state.grounded || state.playerAnimation === "idleHang";
+  const flourishTuck = state.flourishSpinRemaining > 0
+    ? Math.sin((1 - state.flourishSpinRemaining / config.flourishSpinDuration) * Math.PI)
+    : 0;
+  const localAnchors = [
+    [-0.3, 0.92 + breathY],
+    [-0.25, 0.84 + breathY],
+  ];
+  const worldAnchors = localAnchors.map(([x, y], index) => (
+    getGlbRibbonWorldAnchor(index, new THREE.Vector3())
+      ?? getSvgRibbonWorldAnchor(index, new THREE.Vector3())
+      ?? localBodyPointToWorld(x, y, flourishFlip, new THREE.Vector3())
+  ));
+  const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  const stationaryRibbon = idleHang && speed < 0.08 && state.flourishSpinRemaining <= 0;
+  for (const [ribbonIndex, ribbon] of ribbonPhysics.entries()) {
+    const segmentLength = ribbon.segmentLength * characterSettings.ribbon;
+    ribbon.points[0].copy(worldAnchors[ribbonIndex]);
+    ribbon.previous[0].copy(worldAnchors[ribbonIndex]);
+    if (stationaryRibbon) {
+      for (let index = 1; index < ribbon.points.length; index += 1) {
+        const point = ribbon.points[index].set(
+          worldAnchors[ribbonIndex].x + (ribbonIndex === 0 ? -0.04 : 0.04) * state.facing,
+          worldAnchors[ribbonIndex].y - segmentLength * index,
+          0,
+        );
+        ribbon.previous[index].copy(point);
+      }
+      continue;
+    }
+
+    for (let index = 1; index < ribbon.points.length; index += 1) {
+      const amount = index / (ribbon.points.length - 1);
+      const point = ribbon.points[index];
+      const previous = ribbon.previous[index];
+      const velocityX = (point.x - previous.x) * 0.92;
+      const velocityY = (point.y - previous.y) * 0.92;
+      previous.copy(point);
+      const motionAmount = THREE.MathUtils.clamp(speed / 18, 0, 1);
+      const wind = Math.sin(now * (6.2 + ribbonIndex * 0.8) + index * 0.86) * config.ribbonWind * amount * motionAmount;
+      const flutter = Math.sin(now * (11.5 + ribbonIndex) + index * 1.35) * 0.018 * amount * motionAmount;
+      const flipCurl = Math.sin(amount * Math.PI * 1.7 + ribbonIndex * 0.9 + now * 5.4) * flourishTuck * 0.045;
+      point.x += velocityX + (wind + flutter + flipCurl) * state.facing * ribbonDt * 60;
+      point.y += velocityY + (config.gravity * 0.006 * amount + (idleHang ? -0.025 : 0.012)) * ribbonDt;
+    }
+
+    for (let pass = 0; pass < 8; pass += 1) {
+      ribbon.points[0].copy(worldAnchors[ribbonIndex]);
+      for (let index = 1; index < ribbon.points.length; index += 1) {
+        const prev = ribbon.points[index - 1];
+        const point = ribbon.points[index];
+        const dx = point.x - prev.x;
+        const dy = point.y - prev.y;
+        const distance = Math.max(Math.hypot(dx, dy), 0.0001);
+        const difference = (distance - segmentLength) / distance;
+        if (index === 1) {
+          point.x -= dx * difference;
+          point.y -= dy * difference;
+        } else {
+          prev.x += dx * difference * 0.5;
+          prev.y += dy * difference * 0.5;
+          point.x -= dx * difference * 0.5;
+          point.y -= dy * difference * 0.5;
+        }
+      }
+    }
+  }
+  const topRibbon = ribbonPhysics[0].points.map((point) => worldPointToLocalBody(point, flourishFlip));
+  const bottomRibbon = ribbonPhysics[1].points.map((point) => worldPointToLocalBody(point, flourishFlip));
+  const shadowOffset = 0.035;
+  setRibbonLine(playerRig.lines.scarfTopShadow, topRibbon.map(([x, y]) => [x + shadowOffset, y - shadowOffset]), 0.08);
+  setRibbonLine(playerRig.lines.scarfBottomShadow, bottomRibbon.map(([x, y]) => [x + shadowOffset, y - shadowOffset]), 0.08);
+  setRibbonLine(playerRig.lines.scarfTop, topRibbon, 0.18);
+  setRibbonLine(playerRig.lines.scarfBottom, bottomRibbon, 0.17);
+  playerRig.lines.scarfTop.visible = true;
+  playerRig.lines.scarfBottom.visible = true;
+  playerRig.lines.scarfTopShadow.visible = true;
+  playerRig.lines.scarfBottomShadow.visible = true;
+}
+
 function updateProceduralPlayerRig(now, dt, flourishFlip = 0) {
   const idleBreath = state.playerAnimation === "idleHang" ? Math.sin(now * 3.2) : 0;
   const quickPulse = Math.sin(now * 5.6);
@@ -4306,25 +6101,44 @@ function updateProceduralPlayerRig(now, dt, flourishFlip = 0) {
   const torsoScale = characterSettings.torso;
   const headScale = characterSettings.head;
 
-  playerRig.dots.torsoShadow.position.set(0.02 - breathX, 0.16 + breathY * 0.45, 0.09);
-  playerRig.dots.torsoShadow.scale.set((0.34 + idleBreath * 0.012) * torsoScale, (0.42 - idleBreath * 0.01) * torsoScale, 1);
-  playerRig.dots.torsoGold.position.set(0.08 + breathX, 0.35 + breathY, 0.14);
-  playerRig.dots.torsoGold.scale.set((0.28 + idleBreath * 0.012) * torsoScale, (0.34 - idleBreath * 0.012) * torsoScale, 1);
-  playerRig.dots.chestPlate.position.set(0.19 + breathX * 1.4, 0.49 + breathY * 1.2, 0.16);
-  playerRig.dots.chestPlate.scale.set(0.18 * torsoScale, 0.18 * torsoScale, 1);
-  playerRig.dots.waist.position.set(0.05 - breathX * 0.4, -0.15 + breathY * 0.15, 0.15);
-  playerRig.dots.waist.scale.set(0.24 * torsoScale, 0.24 * torsoScale, 1);
+  placePlate(playerRig.plates.torsoCore, 0.0 - breathX * 0.2, 0.19 + breathY * 0.35, -0.04, 0.22 * torsoScale, 0.72 * torsoScale);
+  placePlate(playerRig.plates.chestArmor, 0.12 + breathX, 0.53 + breathY, -0.36, 0.38 * torsoScale, 0.28 * torsoScale);
+  placePlate(playerRig.plates.chestShell, 0.13 + breathX, 0.49 + breathY, -0.18, 0.8 * torsoScale, 0.82 * torsoScale);
+  placePlate(playerRig.plates.chestCoreInset, 0.02 + breathX * 0.35, 0.25 + breathY * 0.6, -0.08, 0.72 * torsoScale, 0.82 * torsoScale);
+  placePlate(playerRig.plates.chestWing, 0.22 + breathX, 0.43 + breathY, -0.44, 0.2 * torsoScale, 0.22 * torsoScale);
+  placePlate(playerRig.plates.abdomenPlate, 0.03 - breathX * 0.3, 0.13 + breathY * 0.2, -0.05, 0.18 * torsoScale, 0.32 * torsoScale);
+  placePlate(playerRig.plates.pelvisArmor, 0.06 - breathX * 0.1, -0.18 + breathY * 0.1, -0.24, 0.28 * torsoScale, 0.15 * torsoScale);
+  placePlate(playerRig.plates.neckStack, -0.12 + breathX * 0.25, 0.75 + breathY * 0.65, -0.04, 0.12 * headScale, 0.46 * headScale);
+  placePlate(playerRig.plates.neckFront, -0.06 + breathX * 0.25, 0.75 + breathY * 0.65, -0.06, 0.07 * headScale, 0.36 * headScale);
+  placePlate(playerRig.plates.helmetShell, -0.04 + breathX * 0.35, 1.02 + breathY * 0.68, -0.08, 1.02 * headScale, 0.98 * headScale);
+  placePlate(playerRig.plates.helmetMask, -0.005 + breathX * 0.35, 0.95 + breathY * 0.68, -0.18, 0.86 * headScale, 0.92 * headScale);
+  placePlate(playerRig.plates.helmetBackPlate, -0.09 + breathX * 0.25, 1.04 + breathY * 0.68, -0.14, 0.24 * headScale, 0.22 * headScale);
+  placePlate(playerRig.plates.helmetBeak, 0.11 + breathX * 0.25, 1.12 + breathY * 0.68, 0.24, 0.24 * headScale, 0.065 * headScale);
+  placePlate(playerRig.plates.helmetJaw, 0.13 + breathX * 0.25, 0.88 + breathY * 0.68, -0.56, 0.16 * headScale, 0.07 * headScale);
 
-  playerRig.dots.helmet.position.set(-0.03 + breathX * 0.35, 0.96 + breathY * 0.68, 0.2);
-  playerRig.dots.helmet.scale.set(0.34 * headScale, 0.31 * headScale, 1);
-  playerRig.dots.helmetBack.position.set(-0.17 + breathX * 0.2, 0.92 + breathY * 0.6, 0.17);
-  playerRig.dots.helmetBack.scale.set(0.24 * headScale, 0.24 * headScale, 1);
+  playerRig.dots.torsoShadow.position.set(-0.03 - breathX, 0.08 + breathY * 0.45, 0.09);
+  playerRig.dots.torsoShadow.scale.set((0.23 + idleBreath * 0.01) * torsoScale, (0.46 - idleBreath * 0.01) * torsoScale, 1);
+  playerRig.dots.torsoGold.position.set(0.09 + breathX, 0.55 + breathY, 0.14);
+  playerRig.dots.torsoGold.scale.set((0.18 + idleBreath * 0.01) * torsoScale, (0.18 - idleBreath * 0.01) * torsoScale, 1);
+  playerRig.dots.chestPlate.position.set(0.12 + breathX * 1.4, 0.53 + breathY * 1.2, 0.16);
+  playerRig.dots.chestPlate.scale.set(0.1 * torsoScale, 0.1 * torsoScale, 1);
+  playerRig.dots.waist.position.set(0.03 - breathX * 0.4, -0.2 + breathY * 0.15, 0.15);
+  playerRig.dots.waist.scale.set(0.13 * torsoScale, 0.13 * torsoScale, 1);
+
+  playerRig.dots.helmet.position.set(-0.04 + breathX * 0.35, 1.02 + breathY * 0.68, 0.2);
+  playerRig.dots.helmet.scale.set(0.26 * headScale, 0.3 * headScale, 1);
+  playerRig.dots.helmetBack.position.set(-0.18 + breathX * 0.2, 0.96 + breathY * 0.6, 0.17);
+  playerRig.dots.helmetBack.scale.set(0.17 * headScale, 0.24 * headScale, 1);
   playerRig.dots.visor.position.set(0.14 + breathX * 0.25, 0.99 + breathY * 0.68, 0.22);
-  playerRig.dots.visor.scale.set(0.15 * headScale, 0.08 * headScale, 1);
-  playerRig.dots.helmetShine.position.set(-0.12 + breathX * 0.25, 1.09 + breathY * 0.68, 0.24);
-  playerRig.dots.helmetShine.scale.set(0.07 * headScale, 0.1 * headScale, 1);
+  playerRig.dots.visor.scale.set(0.11 * headScale, 0.055 * headScale, 1);
+  playerRig.dots.helmetShine.position.set(-0.16 + breathX * 0.25, 1.16 + breathY * 0.68, 0.24);
+  playerRig.dots.helmetShine.scale.set(0.05 * headScale, 0.075 * headScale, 1);
+  playerRig.dots.eyeGlow.position.set(0.14 + breathX * 0.25, 1.0 + breathY * 0.68, 0.25);
+  playerRig.dots.eyeGlow.scale.set(0.08 * headScale, 0.08 * headScale, 1);
+  playerRig.dots.eyeCore.position.set(0.14 + breathX * 0.25, 1.0 + breathY * 0.68, 0.26);
+  playerRig.dots.eyeCore.scale.set(0.045 * headScale, 0.045 * headScale, 1);
+  placeRing(playerRig.rings.eye, 0.14 + breathX * 0.25, 1.0 + breathY * 0.68, 0.105 * headScale);
   playerRig.dots.scarfKnot.position.set(-0.24 + breathX, 0.86 + breathY * 0.8, 0.22);
-  updateSvgPuppetRig();
 
   const ribbonTimeScale = isSlowMotionActive() ? config.slowMotionForwardScale : 1;
   const ribbonDt = Math.min(dt * ribbonTimeScale, 0.033);
@@ -4337,7 +6151,8 @@ function updateProceduralPlayerRig(now, dt, flourishFlip = 0) {
     [-0.25, 0.84 + breathY],
   ];
   const worldAnchors = localAnchors.map(([x, y], index) => (
-    getSvgRibbonWorldAnchor(index, new THREE.Vector3())
+    getGlbRibbonWorldAnchor(index, new THREE.Vector3())
+      ?? getSvgRibbonWorldAnchor(index, new THREE.Vector3())
       ?? localBodyPointToWorld(x, y, flourishFlip, new THREE.Vector3())
   ));
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
@@ -4411,38 +6226,75 @@ function updateProceduralPlayerRig(now, dt, flourishFlip = 0) {
 
   const frontArmStart = getLimbPoint(playerLimbs.frontArm, 0, playerRigScratchA);
   const frontArmEnd = getLimbPoint(playerLimbs.frontArm, 1, playerRigScratchB);
-  playerRig.dots.shoulderFront.position.set(frontArmStart.x + 0.03, frontArmStart.y + 0.03, 0.2);
-  playerRig.dots.shoulderFront.scale.set(0.15 * characterSettings.limbs, 0.15 * characterSettings.limbs, 1);
-  placeDotBetween(playerRig.dots.forearmGrapple, frontArmStart, frontArmEnd, 0.72, 0.04, -0.02);
-  playerRig.dots.forearmGrapple.scale.set(0.12 * characterSettings.limbs, 0.12 * characterSettings.limbs, 1);
+  const frontArmElbow = new THREE.Vector3();
+  getLimbJointPoints(playerLimbs.frontArm, frontArmStart, frontArmElbow, frontArmEnd);
+  placePlateBetween(playerRig.plates.leftUpperArm, frontArmStart, frontArmElbow, 0.11 * characterSettings.limbs, 0.76, 0.005);
+  placePlate(playerRig.plates.leftShoulderShell, frontArmStart.x + 0.035, frontArmStart.y + 0.02, -0.18, 0.72 * characterSettings.limbs, 0.72 * characterSettings.limbs);
+  placePlateBetween(playerRig.plates.leftLowerArm, frontArmElbow, frontArmEnd, 0.1 * characterSettings.limbs, 0.82, -0.005);
+  placePlateBetween(playerRig.plates.leftForearmDecalA, frontArmElbow, frontArmEnd, 0.025 * characterSettings.limbs, 0.22, -0.055);
+  placePlateBetween(playerRig.plates.leftForearmDecalB, frontArmElbow, frontArmEnd, 0.025 * characterSettings.limbs, 0.22, 0.045);
+  playerRig.dots.shoulderFront.position.set(frontArmStart.x + 0.02, frontArmStart.y + 0.02, 0.2);
+  playerRig.dots.shoulderFront.scale.set(0.11 * characterSettings.limbs, 0.11 * characterSettings.limbs, 1);
+  placeRing(playerRig.rings.shoulderFront, frontArmStart.x + 0.02, frontArmStart.y + 0.02, 0.12 * characterSettings.limbs);
+  placeDotBetween(playerRig.dots.elbowFront, frontArmStart, frontArmEnd, 0.5, 0.01, 0.01);
+  playerRig.dots.elbowFront.scale.set(0.055 * characterSettings.limbs, 0.055 * characterSettings.limbs, 1);
+  placeRing(playerRig.rings.elbowFront, frontArmElbow.x, frontArmElbow.y, 0.085 * characterSettings.limbs);
+  placeDotBetween(playerRig.dots.forearmGrapple, frontArmStart, frontArmEnd, 0.72, 0.025, -0.015);
+  playerRig.dots.forearmGrapple.scale.set(0.085 * characterSettings.limbs, 0.085 * characterSettings.limbs, 1);
   placeDotBetween(playerRig.dots.grappleLight, frontArmStart, frontArmEnd, 0.75, 0.08, 0.01);
   playerRig.dots.frontHand.position.set(frontArmEnd.x, frontArmEnd.y, 0.23);
-  playerRig.dots.frontHand.scale.set(0.09 * characterSettings.limbs, 0.09 * characterSettings.limbs, 1);
+  playerRig.dots.frontHand.scale.set(0.065 * characterSettings.limbs, 0.065 * characterSettings.limbs, 1);
+  placePlate(playerRig.plates.frontFingerA, frontArmEnd.x + 0.035, frontArmEnd.y - 0.06, -0.08, 0.024 * characterSettings.limbs, 0.12 * characterSettings.limbs);
+  placePlate(playerRig.plates.frontFingerB, frontArmEnd.x + 0.08, frontArmEnd.y - 0.055, -0.18, 0.022 * characterSettings.limbs, 0.1 * characterSettings.limbs);
 
   const backArmStart = getLimbPoint(playerLimbs.backArm, 0, playerRigScratchA);
   const backArmEnd = getLimbPoint(playerLimbs.backArm, 1, playerRigScratchB);
-  playerRig.dots.shoulderBack.position.set(backArmStart.x - 0.03, backArmStart.y, 0.11);
-  playerRig.dots.shoulderBack.scale.set(0.13 * characterSettings.limbs, 0.13 * characterSettings.limbs, 1);
+  const backArmElbow = new THREE.Vector3();
+  getLimbJointPoints(playerLimbs.backArm, backArmStart, backArmElbow, backArmEnd);
+  placePlateBetween(playerRig.plates.rightUpperArm, backArmStart, backArmElbow, 0.09 * characterSettings.limbs, 0.74, -0.005);
+  placePlateBetween(playerRig.plates.rightLowerArm, backArmElbow, backArmEnd, 0.08 * characterSettings.limbs, 0.78, 0.004);
+  playerRig.dots.shoulderBack.position.set(backArmStart.x - 0.02, backArmStart.y, 0.11);
+  playerRig.dots.shoulderBack.scale.set(0.1 * characterSettings.limbs, 0.1 * characterSettings.limbs, 1);
+  placeRing(playerRig.rings.shoulderBack, backArmStart.x - 0.02, backArmStart.y, 0.095 * characterSettings.limbs);
   playerRig.dots.backHand.position.set(backArmEnd.x, backArmEnd.y, 0.08);
-  playerRig.dots.backHand.scale.set(0.08 * characterSettings.limbs, 0.08 * characterSettings.limbs, 1);
+  playerRig.dots.backHand.scale.set(0.06 * characterSettings.limbs, 0.06 * characterSettings.limbs, 1);
+  placePlate(playerRig.plates.backFingerA, backArmEnd.x + 0.035, backArmEnd.y - 0.05, -0.12, 0.02 * characterSettings.limbs, 0.1 * characterSettings.limbs);
 
   const frontLegStart = getLimbPoint(playerLimbs.frontLeg, 0, playerRigScratchA);
   const frontLegEnd = getLimbPoint(playerLimbs.frontLeg, 1, playerRigScratchB);
+  const frontLegKnee = new THREE.Vector3();
+  getLimbJointPoints(playerLimbs.frontLeg, frontLegStart, frontLegKnee, frontLegEnd);
+  placePlate(playerRig.plates.leftHipShell, frontLegStart.x + 0.03, frontLegStart.y - 0.03, -0.16, 0.84 * characterSettings.limbs, 0.8 * characterSettings.limbs);
+  placePlateBetween(playerRig.plates.leftUpperLeg, frontLegStart, frontLegKnee, 0.14 * characterSettings.limbs, 0.82, 0.006);
+  placePlateBetween(playerRig.plates.leftLowerLeg, frontLegKnee, frontLegEnd, 0.1 * characterSettings.limbs, 0.82, -0.006);
+  placePlateBetween(playerRig.plates.leftThighDecalA, frontLegStart, frontLegKnee, 0.032 * characterSettings.limbs, 0.2, -0.06);
+  placePlateBetween(playerRig.plates.leftThighDecalB, frontLegStart, frontLegKnee, 0.032 * characterSettings.limbs, 0.2, 0.05);
   playerRig.dots.hipFront.position.set(frontLegStart.x + 0.04, frontLegStart.y - 0.08, 0.19);
-  playerRig.dots.hipFront.scale.set(0.15 * characterSettings.limbs, 0.32 * characterSettings.limbs, 1);
+  playerRig.dots.hipFront.scale.set(0.11 * characterSettings.limbs, 0.25 * characterSettings.limbs, 1);
   placeDotBetween(playerRig.dots.kneeFront, frontLegStart, frontLegEnd, 0.56, 0.02, 0.01);
-  playerRig.dots.kneeFront.scale.set(0.12 * characterSettings.limbs, 0.26 * characterSettings.limbs, 1);
+  playerRig.dots.kneeFront.scale.set(0.085 * characterSettings.limbs, 0.2 * characterSettings.limbs, 1);
+  placeRing(playerRig.rings.kneeFront, frontLegKnee.x, frontLegKnee.y, 0.1 * characterSettings.limbs);
   playerRig.dots.footFront.position.set(frontLegEnd.x + 0.08, frontLegEnd.y - 0.02, 0.21);
-  playerRig.dots.footFront.scale.set(0.2 * characterSettings.limbs, 0.07 * characterSettings.limbs, 1);
+  playerRig.dots.footFront.scale.set(0.16 * characterSettings.limbs, 0.055 * characterSettings.limbs, 1);
+  placeRing(playerRig.rings.ankleFront, frontLegEnd.x + 0.02, frontLegEnd.y + 0.02, 0.09 * characterSettings.limbs);
+  placePlate(playerRig.plates.leftFootSole, frontLegEnd.x + 0.11, frontLegEnd.y - 0.055, 0.03, 0.28 * characterSettings.limbs, 0.055 * characterSettings.limbs);
 
   const backLegStart = getLimbPoint(playerLimbs.backLeg, 0, playerRigScratchA);
   const backLegEnd = getLimbPoint(playerLimbs.backLeg, 1, playerRigScratchB);
+  const backLegKnee = new THREE.Vector3();
+  getLimbJointPoints(playerLimbs.backLeg, backLegStart, backLegKnee, backLegEnd);
+  placePlateBetween(playerRig.plates.rightUpperLeg, backLegStart, backLegKnee, 0.11 * characterSettings.limbs, 0.8, -0.006);
+  placePlateBetween(playerRig.plates.rightLowerLeg, backLegKnee, backLegEnd, 0.085 * characterSettings.limbs, 0.78, 0.005);
   playerRig.dots.hipBack.position.set(backLegStart.x - 0.03, backLegStart.y - 0.08, 0.08);
-  playerRig.dots.hipBack.scale.set(0.12 * characterSettings.limbs, 0.28 * characterSettings.limbs, 1);
+  playerRig.dots.hipBack.scale.set(0.095 * characterSettings.limbs, 0.22 * characterSettings.limbs, 1);
   placeDotBetween(playerRig.dots.kneeBack, backLegStart, backLegEnd, 0.56, -0.02, 0);
-  playerRig.dots.kneeBack.scale.set(0.1 * characterSettings.limbs, 0.22 * characterSettings.limbs, 1);
+  playerRig.dots.kneeBack.scale.set(0.075 * characterSettings.limbs, 0.17 * characterSettings.limbs, 1);
+  placeRing(playerRig.rings.kneeBack, backLegKnee.x, backLegKnee.y, 0.08 * characterSettings.limbs);
   playerRig.dots.footBack.position.set(backLegEnd.x - 0.08, backLegEnd.y - 0.02, 0.08);
-  playerRig.dots.footBack.scale.set(0.17 * characterSettings.limbs, 0.06 * characterSettings.limbs, 1);
+  playerRig.dots.footBack.scale.set(0.13 * characterSettings.limbs, 0.05 * characterSettings.limbs, 1);
+  placePlate(playerRig.plates.rightFootSole, backLegEnd.x - 0.08, backLegEnd.y - 0.05, -0.02, 0.2 * characterSettings.limbs, 0.045 * characterSettings.limbs);
+
+  updateSvgPuppetRig();
 }
 
 function updatePlayerLimbs(now, flourishProgress) {
@@ -4462,13 +6314,12 @@ function updatePlayerLimbs(now, flourishProgress) {
     const ropeDirection = scratchVelocityDirection.subVectors(ropeTarget, state.player).normalize();
     const localRopeX = ropeDirection.x * state.facing;
     const localRopeY = ropeDirection.y;
-    const shoulderX = 0.18;
+    const shoulderX = 0.14;
     const shoulderY = 0.58;
-    const reach = 0.92;
+    const reach = 0.78;
     const handX = shoulderX + localRopeX * reach;
     const handY = shoulderY + localRopeY * reach;
-    const tensionBend = THREE.MathUtils.clamp(-localRopeY * 0.08, -0.06, 0.08);
-    setLimbLine(playerLimbs.frontArm, shoulderX, shoulderY, handX, handY, tensionBend);
+    setLimbLine(playerLimbs.frontArm, shoulderX, shoulderY, handX, handY, 0);
 
     const toPlayer = scratchPerpDirection.subVectors(state.player, ropeTarget).normalize();
     const downSwing = state.velocity.y < -0.7;
@@ -4478,21 +6329,21 @@ function updatePlayerLimbs(now, flourishProgress) {
     const arcLift = THREE.MathUtils.clamp(state.velocity.y / 12, -0.75, 0.85);
     const legBias = downSwing ? -0.38 : upSwing ? 0.52 : toPlayer.x * 0.22;
     const backArmLift = THREE.MathUtils.clamp(-localRopeY * 0.18 + 0.12, -0.08, 0.36);
-    setLimbLine(playerLimbs.backArm, -0.05, 0.62, -0.38 - backArmLift, 0.2 + backArmLift, -0.12);
+    setLimbLine(playerLimbs.backArm, -0.05, 0.58, -0.32 - backArmLift * 0.7, 0.22 + backArmLift, -0.08);
     setLimbLine(
       playerLimbs.backLeg,
       -0.02,
       -0.28,
-      -0.34 + legBias * 0.62 - kick * 0.2,
-      -0.88 - arcLift * 0.18,
+      -0.28 + legBias * 0.5 - kick * 0.16,
+      -0.78 - arcLift * 0.16,
       -0.14,
     );
     setLimbLine(
       playerLimbs.frontLeg,
       0.2,
       -0.26,
-      0.36 + legBias * 0.9 + kick * 0.18,
-      -0.82 + arcLift * 0.28,
+      0.32 + legBias * 0.72 + kick * 0.15,
+      -0.76 + arcLift * 0.22,
       0.16,
     );
     return;
@@ -4502,18 +6353,18 @@ function updatePlayerLimbs(now, flourishProgress) {
   if (airborne) {
     const fallTuck = THREE.MathUtils.clamp(-state.velocity.y / 18, -0.25, 0.55);
     const glide = THREE.MathUtils.clamp(state.velocity.x / 18, -0.25, 0.45) * state.facing;
-    setLimbLine(playerLimbs.backArm, -0.05, 0.62, -0.42 - glide * 0.12, 0.18 + fallTuck * 0.08, -0.1);
-    setLimbLine(playerLimbs.frontArm, 0.18, 0.58, 0.52 + glide * 0.16, 0.2 + fallTuck * 0.12, 0.12);
-    setLimbLine(playerLimbs.backLeg, -0.02, -0.28, -0.36 - glide * 0.08, -0.86 + fallTuck * 0.2, -0.1);
-    setLimbLine(playerLimbs.frontLeg, 0.2, -0.26, 0.48 + glide * 0.1, -0.84 + fallTuck * 0.24, 0.12);
+    setLimbLine(playerLimbs.backArm, -0.05, 0.58, -0.34 - glide * 0.1, 0.2 + fallTuck * 0.08, -0.08);
+    setLimbLine(playerLimbs.frontArm, 0.14, 0.58, 0.42 + glide * 0.13, 0.22 + fallTuck * 0.1, 0.08);
+    setLimbLine(playerLimbs.backLeg, -0.02, -0.25, -0.28 - glide * 0.07, -0.76 + fallTuck * 0.17, -0.08);
+    setLimbLine(playerLimbs.frontLeg, 0.16, -0.24, 0.36 + glide * 0.08, -0.76 + fallTuck * 0.2, 0.08);
     return;
   }
 
   const idleDrift = Math.sin(now * 2.2) * 0.04;
-  setLimbLine(playerLimbs.backArm, -0.05, 0.62, -0.42, 0.2 + idleDrift, -0.08);
-  setLimbLine(playerLimbs.frontArm, 0.18, 0.58, 0.48, 0.18 - idleDrift, 0.08);
-  setLimbLine(playerLimbs.backLeg, -0.02, -0.28, -0.34, -0.9, -0.08);
-  setLimbLine(playerLimbs.frontLeg, 0.2, -0.26, 0.42, -0.9, 0.08);
+  setLimbLine(playerLimbs.frontArm, 0.11, 0.56, 0.02, 0.08 + idleDrift * 0.3, -0.035);
+  setLimbLine(playerLimbs.frontLeg, 0.08, -0.22, 0.02, -0.9, 0.025);
+  setLimbLine(playerLimbs.backLeg, -0.06, -0.22, -0.08, -0.84, -0.025);
+  setLimbLine(playerLimbs.backArm, -0.04, 0.56, -0.12, 0.1 + idleDrift, -0.04);
 }
 
 function resolvePlayerAnimationState() {
@@ -4546,8 +6397,16 @@ function applyPlayerAnimation(now, flourishProgress, dt) {
     flourishFlip = easedFlip * Math.PI * 2 * state.flourishFlipDirection;
   }
   playerBody.rotation.z = flourishFlip;
-  updatePlayerLimbs(now, flourishProgress);
-  updateProceduralPlayerRig(now, dt, flourishFlip);
+  syncGlbCharacterTransform(state.facing, flourishFlip);
+  if (!config.useGlbCharacter || !glbCharacter.loaded || !config.useRestRelativeGlbPose) {
+    updatePlayerLimbs(now, flourishProgress);
+  }
+  if (!config.freezeGlbCharacterPose) poseGlbCharacterFromPhysics(now);
+  if (config.useGlbCharacter && glbCharacter.loaded) {
+    updatePlayerRibbonPhysics(now, dt, flourishFlip);
+  } else {
+    updateProceduralPlayerRig(now, dt, flourishFlip);
+  }
   let poseRotation = THREE.MathUtils.clamp(-state.velocity.x * 0.035, -0.5, 0.5);
   let squashX = 1;
   let squashY = 1;
@@ -4587,14 +6446,20 @@ function applyPlayerAnimation(now, flourishProgress, dt) {
   ]) {
     line.rotation.z = 0;
   }
+  const glbActive = config.useGlbCharacter && glbCharacter.loaded;
   playerMesh.rotation.z = poseRotation;
-  playerMesh.rotation.x = THREE.MathUtils.clamp(state.velocity.y * 0.025, -0.45, 0.45);
-  playerMesh.rotation.y = twistRotation;
-  playerMesh.scale.set(
-    (1 + state.flourishPulse * 0.22 + Math.sin(flourishProgress * Math.PI) * 0.08) * squashX,
-    (1 + state.flourishPulse * 0.22) * squashY,
-    1,
-  );
+  playerMesh.rotation.x = glbActive ? 0 : THREE.MathUtils.clamp(state.velocity.y * 0.025, -0.45, 0.45);
+  playerMesh.rotation.y = glbActive ? 0 : twistRotation;
+  if (glbActive) {
+    const pulseScale = 1 + state.flourishPulse * 0.08;
+    playerMesh.scale.set(pulseScale, pulseScale, 1);
+  } else {
+    playerMesh.scale.set(
+      (1 + state.flourishPulse * 0.22 + Math.sin(flourishProgress * Math.PI) * 0.08) * squashX,
+      (1 + state.flourishPulse * 0.22) * squashY,
+      1,
+    );
+  }
 
 }
 
@@ -4663,7 +6528,11 @@ function tick(time) {
   updateMotionTrail();
   updateSpeedLines(now);
   updateHud(now);
-  renderer.render(scene, camera);
+  if (pixelateSettings.enabled) {
+    composer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
   requestAnimationFrame(tick);
 }
 
@@ -4695,6 +6564,11 @@ window.addEventListener("keydown", (event) => {
   if (event.code === "KeyV") queueFlourish(performance.now() / 1000);
   if (event.code === "KeyR") reset();
   if (event.code === "KeyP") setPaused(!state.paused);
+  if (event.code === "KeyG") {
+    config.debugGlbNeutralOnly = !config.debugGlbNeutralOnly;
+    if (config.debugGlbNeutralOnly) resetGlbPivotAngles();
+    syncCharacterSourceVisibility();
+  }
 });
 
 window.addEventListener("keyup", (event) => {
@@ -4733,6 +6607,14 @@ bindGameButton(zoomOutButton, () => setBuildZoom(camera.position.z + config.buil
 bindGameButton(zoomInButton, () => setBuildZoom(camera.position.z - config.buildZoomStep));
 bindGameButton(zoomFitButton, fitBuildViewToStage);
 buildZoomInput.addEventListener("input", () => setBuildZoom(buildZoomInput.value));
+if (levelSelect) {
+  levelSelect.value = currentLevelId;
+  levelSelect.addEventListener("change", () => applyLevel(levelSelect.value, { preserveSavedLayout: true }));
+}
+bindGameButton(pixelateToggleButton, () => setPixelateEnabled(!pixelateSettings.enabled));
+if (pixelateIntensityInput) {
+  pixelateIntensityInput.addEventListener("input", () => setPixelateIntensity(pixelateIntensityInput.value));
+}
 if (characterScaleInput) {
   characterScaleInput.addEventListener("input", () => updateCharacterSetting("scale", characterScaleInput.value));
   characterTorsoInput.addEventListener("input", () => updateCharacterSetting("torso", characterTorsoInput.value));
@@ -4744,9 +6626,14 @@ if (characterScaleInput) {
 bindGameButton(nextLevelButton, () => reset({ resetLevelStats: true }));
 
 resize();
+loadPixelateSettings();
 loadCharacterSettings();
 syncCharacterControls();
 applyCharacterSettings();
+initializeEditorPane();
+decorateControls();
+window.addEventListener("load", refreshLucideIcons);
+loadGlbCharacter();
 loadSvgPuppet();
 reset();
 setPaused(false);

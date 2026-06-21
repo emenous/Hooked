@@ -1,0 +1,26 @@
+Create a clean stylized low-poly 3D game character from these orthographic references.
+
+Use sling-hyper3d-side-view.png and sling-hyper3d-front-view.png as the primary references.
+Use sling-hyper3d-parts-reference.png only to understand the separate rigid armor pieces.
+
+Character:
+SLING is a lean agile mechanical armored humanoid.
+Yellow primary armor sits over a black inner bodysuit.
+Red accent vents appear on the side torso, forearms, and thighs.
+The design uses dark circular mechanical joints at shoulders, elbows, wrists, hips, knees, and ankles.
+The shoulder pads are squared and angular.
+The helmet is birdlike and angular with circular red side/ear details.
+
+Important output requirements:
+- Generate one fully assembled upright character, not an exploded parts sheet.
+- Neutral standing pose.
+- Clean rigid mechanical armor pieces with visible seams.
+- Keep the parts suitable for game rigging: head, torso, pelvis, upper arms, forearms, hands, thighs, shins, and feet should read as separate hard-surface pieces.
+- Do not model long flowing ribbons. Only include small red ribbon attachment tabs on the back/sides of the helmet.
+- Avoid random scratches, noisy AI texture collage, organic muscles, cloth folds, labels, text, construction lines, or background scenery.
+- Prefer clean flat yellow/black/red materials over painterly texture.
+
+If the tool offers settings:
+- Choose game asset / low-poly / stylized hard-surface character.
+- Prefer an assembled model over a scene.
+- Avoid "parts breakdown", "exploded view", or "model sheet" wording in the generation prompt.

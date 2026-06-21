@@ -47,6 +47,33 @@ body {
     #162333;
 }
 
+#game-shell::before,
+#game-shell::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  background: #020507;
+  pointer-events: none;
+  z-index: 8;
+}
+
+#game-shell::before {
+  top: 0;
+}
+
+#game-shell::after {
+  bottom: 0;
+}
+
+@media (min-height: 1080px) {
+  #game-shell::before,
+  #game-shell::after {
+    height: 15vh;
+  }
+}
+
 #game {
   display: block;
   width: 100vw;
@@ -58,6 +85,17 @@ body {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+
+#hud,
+#status-center,
+#controls,
+#flourish-button,
+#editor,
+#level-complete,
+#game-version,
+#restart {
+  z-index: 12;
 }
 
 #game:active {
@@ -208,6 +246,48 @@ strong {
   font-weight: 700;
 }
 
+#editor.has-tweakpane {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: start;
+  gap: 10px;
+  width: min(360px, calc(100vw - 300px));
+  max-width: min(360px, calc(100vw - 300px));
+  padding: 10px;
+}
+
+#editor-pane {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+#editor-pane.hidden {
+  display: none;
+}
+
+#editor-pane .tp-dfwv {
+  position: static;
+  width: 100%;
+}
+
+#editor-pane .tp-rotv {
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(5, 12, 12, 0.72);
+  box-shadow: none;
+}
+
+#editor-pane .tp-rotv,
+#editor-pane .tp-lblv_l,
+#editor-pane .tp-fldv_t {
+  font-family: inherit;
+}
+
+#editor.has-tweakpane #build-tools {
+  display: none;
+}
+
 #build-tools {
   display: flex;
   flex-wrap: wrap;
@@ -272,6 +352,10 @@ strong {
 
 #build-tools select,
 #editor button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 30px;
   border: 1px solid rgba(247, 255, 248, 0.22);
   border-radius: 7px;
@@ -294,6 +378,13 @@ strong {
 
 #editor button:hover {
   background: rgba(244, 255, 249, 0.15);
+}
+
+button [data-lucide],
+button svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
 .tool-link {
@@ -332,6 +423,10 @@ kbd {
   position: absolute;
   right: 16px;
   bottom: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   min-width: 104px;
   min-height: 40px;
   border: 1px solid rgba(247, 255, 248, 0.28);
@@ -466,6 +561,10 @@ kbd {
 #next-level {
   position: relative;
   z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   justify-self: end;
   min-width: 148px;
   min-height: 46px;
@@ -509,6 +608,10 @@ kbd {
   right: 22px;
   bottom: 78px;
   display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-direction: column;
   width: 76px;
   height: 76px;
   border: 2px solid rgba(198, 238, 255, 0.72);
@@ -529,6 +632,11 @@ kbd {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+
+#flourish-button svg {
+  width: 18px;
+  height: 18px;
 }
 
 button,
@@ -725,7 +833,7 @@ kbd,
   }
 
   #flourish-button {
-    display: block;
+    display: flex;
   }
 }
 

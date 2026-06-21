@@ -18,43 +18,92 @@
           <button id="reset-rig" type="button">Reset</button>
           <button id="save-rig" type="button">Save</button>
           <button id="export-rig" type="button">Export</button>
+          <button id="download-rig" type="button">Download JSON</button>
           <button id="import-rig" type="button">Import</button>
         </div>
       </header>
 
       <section id="rig-workspace">
         <aside id="parts-panel" aria-label="Rig parts">
-          <label>
-            <span>Part</span>
-            <select id="part-select"></select>
-          </label>
-          <div id="layer-controls" aria-label="Layer controls">
-            <button id="send-back" type="button">Send back</button>
-            <button id="move-back" type="button">Back</button>
-            <button id="move-forward" type="button">Forward</button>
-            <button id="send-front" type="button">Send front</button>
-          </div>
-          <div id="group-controls" aria-label="Group controls">
-            <button id="select-all" type="button">Select all</button>
-            <button id="clear-selection" type="button">Clear</button>
-            <button id="group-selection" type="button">Group selected</button>
-            <button id="ungroup-selection" type="button">Ungroup</button>
-          </div>
+          <details class="tool-section" open>
+            <summary>Layers</summary>
+            <label>
+              <span>Part</span>
+              <select id="part-select"></select>
+            </label>
+            <div id="layer-controls" aria-label="Layer controls">
+              <button id="send-back" type="button">Send back</button>
+              <button id="move-back" type="button">Back</button>
+              <button id="move-forward" type="button">Forward</button>
+              <button id="send-front" type="button">Send front</button>
+            </div>
+            <ol id="layer-list" aria-label="Layer order"></ol>
+          </details>
+          <details class="tool-section" open>
+            <summary>Selection</summary>
+            <div id="group-controls" aria-label="Group controls">
+              <button id="select-all" type="button">Select all</button>
+              <button id="clear-selection" type="button">Clear</button>
+              <button id="group-selection" type="button">Group selected</button>
+              <button id="ungroup-selection" type="button">Ungroup</button>
+            </div>
+          </details>
           <div id="selection-summary" aria-live="polite">1 selected</div>
-          <div id="groups-list" aria-label="Groups"></div>
-          <ol id="layer-list" aria-label="Layer order"></ol>
-          <fieldset id="animation-tools" aria-label="Animation tools">
-            <legend>Animation</legend>
-            <select id="pose-select"></select>
-            <button id="save-pose" type="button">Save pose</button>
-            <button id="delete-pose" type="button">Delete pose</button>
-            <button id="play-preview" type="button">Play</button>
-          </fieldset>
-          <div id="part-controls"></div>
-          <textarea id="rig-output" readonly spellcheck="false" aria-label="Rig export"></textarea>
+          <div id="rig-data-status" aria-live="polite">Loading rig data</div>
+          <details class="tool-section" open>
+            <summary>Groups</summary>
+            <div id="groups-list" aria-label="Groups"></div>
+          </details>
+          <details class="tool-section" open>
+            <summary>Animation</summary>
+            <fieldset id="animation-tools" aria-label="Animation tools">
+              <legend>Animation</legend>
+              <select id="clip-select" aria-label="Animation clip"></select>
+              <select id="pose-select"></select>
+              <button id="prev-frame" type="button">Prev frame</button>
+              <button id="next-frame" type="button">Next frame</button>
+              <input id="pose-name" type="text" autocomplete="off" spellcheck="false" placeholder="pose_name" />
+              <button id="load-pose" type="button">Load</button>
+              <button id="save-pose" type="button">Save pose</button>
+              <button id="duplicate-pose" type="button">Duplicate</button>
+              <button id="delete-pose" type="button">Delete pose</button>
+              <button id="play-preview" type="button">Play</button>
+              <label class="toggle-row">
+                <input id="show-onion" type="checkbox" />
+                <span>Onion skin</span>
+              </label>
+            </fieldset>
+          </details>
+          <details class="tool-section" open>
+            <summary>Transform</summary>
+            <div id="nudge-controls" aria-label="Nudge controls">
+              <button type="button" data-nudge="up">Up</button>
+              <button type="button" data-nudge="left">Left</button>
+              <button type="button" data-nudge="right">Right</button>
+              <button type="button" data-nudge="down">Down</button>
+              <button type="button" data-rotate="-1">Rotate -</button>
+              <button type="button" data-rotate="1">Rotate +</button>
+            </div>
+            <div id="part-controls"></div>
+          </details>
+          <details class="tool-section">
+            <summary>Rig JSON</summary>
+            <div id="code-actions">
+              <button id="copy-rig" type="button">Copy</button>
+              <button id="paste-rig" type="button">Paste</button>
+              <button id="apply-rig-code" type="button">Apply code</button>
+            </div>
+            <textarea id="rig-output" spellcheck="false" aria-label="Rig export"></textarea>
+          </details>
         </aside>
 
         <section id="stage-wrap" aria-label="Rig stage">
+          <div id="stage-toolbar" aria-label="Stage zoom controls">
+            <button id="zoom-out" type="button">Zoom -</button>
+            <input id="stage-zoom" type="range" min="0.55" max="2.5" step="0.05" value="1" aria-label="Stage zoom" />
+            <button id="zoom-in" type="button">Zoom +</button>
+            <button id="zoom-fit" type="button">Fit</button>
+          </div>
           <svg id="rig-stage" viewBox="-220 -260 440 560" role="img" aria-label="Character rig preview">
             <defs>
               <pattern id="grid" width="16" height="16" patternUnits="userSpaceOnUse">
@@ -64,6 +113,8 @@
             <rect x="-220" y="-260" width="440" height="560" fill="url(#grid)" />
             <line x1="-220" y1="0" x2="220" y2="0" class="axis" />
             <line x1="0" y1="-260" x2="0" y2="300" class="axis" />
+            <g id="onion-prev" class="onion-skin onion-prev"></g>
+            <g id="onion-next" class="onion-skin onion-next"></g>
             <g id="rig-parts"></g>
             <g id="selection-box">
               <rect id="selection-rect" x="0" y="0" width="0" height="0" />
@@ -82,10 +133,11 @@
               <g id="preview-parts"></g>
             </svg>
           </aside>
+          <div id="frame-scrubber" aria-label="Animation frame scrubber"></div>
         </section>
       </section>
     </main>
 
-    <script type="module" src="./src/rig.js?v=rig-workspace-v6"></script>
+    <script type="module" src="./src/rig.js?v=rig-workspace-v13"></script>
   </body>
 </html>

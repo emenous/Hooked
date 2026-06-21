@@ -3,15 +3,24 @@ const storageKey = "hooked.character.rig.v1";
 
 const stage = document.querySelector("#rig-stage");
 const rigPartsGroup = document.querySelector("#rig-parts");
+const stageZoomInput = document.querySelector("#stage-zoom");
+const zoomOutButton = document.querySelector("#zoom-out");
+const zoomInButton = document.querySelector("#zoom-in");
+const zoomFitButton = document.querySelector("#zoom-fit");
 const partSelect = document.querySelector("#part-select");
 const layerList = document.querySelector("#layer-list");
 const controlsEl = document.querySelector("#part-controls");
 const outputEl = document.querySelector("#rig-output");
 const selectionSummaryEl = document.querySelector("#selection-summary");
+const rigDataStatusEl = document.querySelector("#rig-data-status");
 const saveButton = document.querySelector("#save-rig");
 const resetButton = document.querySelector("#reset-rig");
 const exportButton = document.querySelector("#export-rig");
+const downloadButton = document.querySelector("#download-rig");
 const importButton = document.querySelector("#import-rig");
+const copyRigButton = document.querySelector("#copy-rig");
+const pasteRigButton = document.querySelector("#paste-rig");
+const applyRigCodeButton = document.querySelector("#apply-rig-code");
 const toggleMarkersButton = document.querySelector("#toggle-markers");
 const sendBackButton = document.querySelector("#send-back");
 const moveBackButton = document.querySelector("#move-back");
@@ -22,11 +31,22 @@ const clearSelectionButton = document.querySelector("#clear-selection");
 const groupSelectionButton = document.querySelector("#group-selection");
 const ungroupSelectionButton = document.querySelector("#ungroup-selection");
 const groupsList = document.querySelector("#groups-list");
+const clipSelect = document.querySelector("#clip-select");
 const poseSelect = document.querySelector("#pose-select");
+const prevFrameButton = document.querySelector("#prev-frame");
+const nextFrameButton = document.querySelector("#next-frame");
+const poseNameInput = document.querySelector("#pose-name");
+const loadPoseButton = document.querySelector("#load-pose");
 const savePoseButton = document.querySelector("#save-pose");
+const duplicatePoseButton = document.querySelector("#duplicate-pose");
 const deletePoseButton = document.querySelector("#delete-pose");
 const playPreviewButton = document.querySelector("#play-preview");
+const showOnionInput = document.querySelector("#show-onion");
+const nudgeControls = document.querySelector("#nudge-controls");
 const previewPartsGroup = document.querySelector("#preview-parts");
+const onionPrevGroup = document.querySelector("#onion-prev");
+const onionNextGroup = document.querySelector("#onion-next");
+const frameScrubber = document.querySelector("#frame-scrubber");
 const selectionBox = document.querySelector("#selection-box");
 const selectionRect = document.querySelector("#selection-rect");
 const marqueeBox = document.querySelector("#marquee-box");
@@ -69,6 +89,7 @@ const defaultLayerOrder = [
   "rightHand",
 ];
 const allPartKeys = partDefinitions.map((part) => part.key);
+const leftSidePartKeys = new Set(["leftUpperArm", "leftLowerArm", "leftHand", "leftUpperLeg", "leftLowerLeg", "leftFoot"]);
 const markerFillValues = new Set(["#5eff00", "aqua", "#00ffff", "rgb(0,255,255)"]);
 const rigParts = new Map();
 const rigValues = Object.fromEntries(partDefinitions.map((part) => [part.key, {
@@ -90,12 +111,82 @@ let groups = [
   { name: "Left leg", parts: ["leftUpperLeg", "leftLowerLeg", "leftFoot"], active: true },
 ];
 let animations = { m_mid_swing: cloneRigValues(rigValues) };
+let clips = {};
 let undoStack = [];
 let previewPlaying = false;
 let previewStart = performance.now();
+let onionVisible = false;
+let stageZoom = 1;
+const baseStageViewBox = { x: -220, y: -260, width: 440, height: 560 };
 
 function cloneRigValues(values = rigValues) {
   return JSON.parse(JSON.stringify(values));
+}
+
+function poseNames() {
+  return Object.keys(animations);
+}
+
+function cleanPoseName(name) {
+  return String(name || "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 48);
+}
+
+function uniquePoseName(baseName) {
+  const base = cleanPoseName(baseName) || "pose";
+  if (!animations[base]) return base;
+  let index = 2;
+  while (animations[`${base}_${index}`]) index += 1;
+  return `${base}_${index}`;
+}
+
+function setStageZoom(value) {
+  stageZoom = THREEClamp(Number(value) || 1, 0.55, 2.5);
+  if (stageZoomInput) stageZoomInput.value = String(stageZoom);
+  const width = baseStageViewBox.width / stageZoom;
+  const height = baseStageViewBox.height / stageZoom;
+  const centerX = baseStageViewBox.x + baseStageViewBox.width * 0.5;
+  const centerY = baseStageViewBox.y + baseStageViewBox.height * 0.5;
+  stage.setAttribute("viewBox", `${centerX - width * 0.5} ${centerY - height * 0.5} ${width} ${height}`);
+}
+
+function THREEClamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function applyRigCode() {
+  try {
+    pushUndo();
+    applyImportedData(JSON.parse(outputEl.value));
+    saveRig();
+    rigDataStatusEl.textContent = "Applied pasted rig code";
+  } catch {
+    outputEl.focus();
+    rigDataStatusEl.textContent = "Could not parse rig JSON";
+  }
+}
+
+async function copyRigCode() {
+  updateOutput();
+  outputEl.select();
+  try {
+    await navigator.clipboard.writeText(outputEl.value);
+    rigDataStatusEl.textContent = "Copied rig JSON";
+  } catch {
+    document.execCommand("copy");
+  }
+}
+
+async function pasteRigCode() {
+  try {
+    outputEl.value = await navigator.clipboard.readText();
+    rigDataStatusEl.textContent = "Pasted rig JSON";
+  } catch {
+    outputEl.focus();
+  }
 }
 
 function svgEl(name, attributes = {}) {
@@ -173,6 +264,14 @@ function applyPreviewTransform(key, values = rigValues) {
   part.previewGroup.setAttribute("transform", transformString(key, nextValues));
 }
 
+function applyOnionTransform(key, values, target = "prev") {
+  const part = rigParts.get(key);
+  const nextValues = values?.[key];
+  const group = target === "next" ? part?.onionNextGroup : part?.onionPrevGroup;
+  if (!group || !nextValues) return;
+  group.setAttribute("transform", transformString(key, nextValues));
+}
+
 function applyAllTransforms() {
   for (const key of allPartKeys) {
     applyPartTransform(key);
@@ -180,6 +279,7 @@ function applyAllTransforms() {
   }
   updateSelectionBox();
   updatePreview();
+  updateOnionSkin();
 }
 
 function pushUndo() {
@@ -188,6 +288,7 @@ function pushUndo() {
     groups: structuredClone(groups),
     parts: cloneRigValues(),
     animations: structuredClone(animations),
+    clips: structuredClone(clips),
   });
   if (undoStack.length > 10) undoStack.shift();
 }
@@ -198,6 +299,7 @@ function undo() {
   layerOrder = [...snapshot.layerOrder];
   groups = structuredClone(snapshot.groups || []);
   animations = structuredClone(snapshot.animations || animations);
+  clips = structuredClone(snapshot.clips || clips);
   for (const key of allPartKeys) {
     if (snapshot.parts[key]) Object.assign(rigValues[key], snapshot.parts[key]);
   }
@@ -206,6 +308,7 @@ function undo() {
   renderLayerList();
   renderGroupsList();
   renderPoseSelect();
+  renderClipSelect();
   renderPartControls();
   updateSelectionUi();
   updateOutput();
@@ -227,7 +330,10 @@ function updateSelectionUi() {
     part.group.classList.toggle("selected", partKey === selectedPartKey);
     part.group.classList.toggle("multi-selected", selectedPartKeys.has(partKey));
   }
-  selectionSummaryEl.textContent = `${selectedPartKeys.size} selected`;
+  const isolatedGroup = selectedPartKeys.size === 1 ? getActiveGroupForPart(selectedPartKey) : null;
+  selectionSummaryEl.textContent = isolatedGroup
+    ? `1 selected - isolated from ${isolatedGroup.name}`
+    : `${selectedPartKeys.size} selected`;
   updateSelectionBox();
 }
 
@@ -235,7 +341,9 @@ function selectPart(key, mode = "single") {
   const grouped = getActiveGroupForPart(key);
   selectedPartKey = key;
   partSelect.value = key;
-  if (grouped && mode === "single") {
+  if (mode === "isolate") {
+    selectedPartKeys = new Set([key]);
+  } else if (grouped && mode === "single") {
     selectedPartKeys = new Set(grouped.parts);
   } else if (mode === "toggle") {
     if (selectedPartKeys.has(key) && selectedPartKeys.size > 1) selectedPartKeys.delete(key);
@@ -294,6 +402,18 @@ function transformSelection({ dx = 0, dy = 0, rotationDelta = 0, scaleFactor = 1
   updateOutput();
 }
 
+function nudgeSelection(dx = 0, dy = 0, rotationDelta = 0) {
+  if (!selectedPartKeys.size) return;
+  pushUndo();
+  transformSelection({
+    dx,
+    dy,
+    rotationDelta,
+    originals: Object.fromEntries([...selectedPartKeys].map((key) => [key, { ...rigValues[key] }])),
+    center: getSelectionCenter(),
+  });
+}
+
 function applyLayerOrder() {
   for (const key of layerOrder) {
     const part = rigParts.get(key);
@@ -302,6 +422,11 @@ function applyLayerOrder() {
   for (const key of layerOrder) {
     const part = rigParts.get(key);
     if (part?.previewGroup) previewPartsGroup.append(part.previewGroup);
+  }
+  for (const key of layerOrder) {
+    const part = rigParts.get(key);
+    if (part?.onionPrevGroup) onionPrevGroup.append(part.onionPrevGroup);
+    if (part?.onionNextGroup) onionNextGroup.append(part.onionNextGroup);
   }
 }
 
@@ -333,11 +458,35 @@ function renderLayerList() {
     const definition = partDefinitions.find((part) => part.key === key);
     const item = document.createElement("li");
     item.className = key === selectedPartKey ? "selected" : selectedPartKeys.has(key) ? "multi-selected" : "";
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "layer-name";
+    label.textContent = definition?.label || key;
+    label.addEventListener("click", (event) => selectPart(key, event.shiftKey || event.metaKey || event.ctrlKey ? "toggle" : "single"));
+    label.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      selectPart(key, "isolate");
+    });
+    const down = document.createElement("button");
+    down.type = "button";
+    down.className = "layer-mini";
+    down.textContent = "Down";
+    down.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectPart(key, "isolate");
+      moveSelectedLayer("backward");
+    });
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = definition?.label || key;
-    button.addEventListener("click", (event) => selectPart(key, event.shiftKey || event.metaKey || event.ctrlKey ? "toggle" : "single"));
-    item.append(button);
+    button.className = "layer-mini";
+    button.textContent = "Up";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectPart(key, "isolate");
+      moveSelectedLayer("forward");
+    });
+    item.append(label, down, button);
     layerList.append(item);
   }
 }
@@ -591,6 +740,7 @@ function exportData() {
     groups,
     parts: rigValues,
     animations,
+    clips,
   };
 }
 
@@ -600,6 +750,20 @@ function updateOutput() {
 
 function saveRig() {
   localStorage.setItem(storageKey, JSON.stringify(exportData()));
+  rigDataStatusEl.textContent = "Saved browser draft";
+}
+
+function downloadRigData() {
+  updateOutput();
+  const blob = new Blob([`${outputEl.value}\n`], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "m-rig.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function applyImportedData(data) {
@@ -623,6 +787,9 @@ function applyImportedData(data) {
   if (data.animations && typeof data.animations === "object") {
     animations = structuredClone(data.animations);
   }
+  if (data.clips && typeof data.clips === "object") {
+    clips = structuredClone(data.clips);
+  }
   for (const [key, values] of Object.entries(savedParts)) {
     if (!rigValues[key]) continue;
     for (const property of ["x", "y", "scale", "rotation"]) {
@@ -635,17 +802,29 @@ function applyImportedData(data) {
   renderLayerList();
   renderGroupsList();
   renderPoseSelect();
+  renderClipSelect();
   renderPartControls();
   updateSelectionUi();
   updateOutput();
   return true;
 }
 
-function loadSavedRig() {
+async function loadFileRig() {
   try {
-    applyImportedData(JSON.parse(localStorage.getItem(storageKey)));
+    const response = await fetch("./data/m-rig.json", { cache: "no-store" });
+    if (!response.ok) return false;
+    return applyImportedData(await response.json());
+  } catch {
+    return false;
+  }
+}
+
+function loadDraftRig() {
+  try {
+    return applyImportedData(JSON.parse(localStorage.getItem(storageKey)));
   } catch {
     localStorage.removeItem(storageKey);
+    return false;
   }
 }
 
@@ -665,6 +844,7 @@ function resetRig() {
     { name: "Left leg", parts: ["leftUpperLeg", "leftLowerLeg", "leftFoot"], active: true },
   ];
   animations = { m_mid_swing: cloneRigValues() };
+  clips = {};
   selectedPartKey = "head";
   selectedPartKeys = new Set([selectedPartKey]);
   applyLayerOrder();
@@ -674,31 +854,118 @@ function resetRig() {
   renderLayerList();
   renderGroupsList();
   renderPoseSelect();
+  renderClipSelect();
   updateSelectionUi();
   updateOutput();
 }
 
 function renderPoseSelect() {
   const current = poseSelect.value;
+  const clipFrames = clipFrameNames();
+  const names = clipSelect?.value && clipFrames.length ? clipFrames : poseNames();
   poseSelect.replaceChildren();
-  for (const name of Object.keys(animations)) {
+  for (const name of names) {
     const option = document.createElement("option");
     option.value = name;
     option.textContent = name;
     poseSelect.append(option);
   }
-  poseSelect.value = animations[current] ? current : Object.keys(animations)[0] || "";
+  poseSelect.value = names.includes(current) ? current : names[0] || "";
+  if (poseNameInput) poseNameInput.value = poseSelect.value;
+  updateOnionSkin();
+  renderFrameScrubber();
+}
+
+function clipFrameNames() {
+  const clip = clips[clipSelect?.value];
+  const names = Array.isArray(clip?.frames)
+    ? clip.frames.filter((name) => animations[name])
+    : [];
+  return names.length ? names : poseNames();
+}
+
+function renderClipSelect() {
+  if (!clipSelect) return;
+  const current = clipSelect.value;
+  clipSelect.replaceChildren();
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "All poses";
+  clipSelect.append(allOption);
+  for (const [name, clip] of Object.entries(clips)) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = clip.label || name;
+    clipSelect.append(option);
+  }
+  clipSelect.value = clips[current] ? current : clips.start_swinging ? "start_swinging" : "";
+  renderPoseSelect();
+}
+
+function stepClipFrame(direction) {
+  const names = clipFrameNames();
+  if (!names.length) return;
+  const currentIndex = Math.max(0, names.indexOf(poseSelect.value));
+  const nextIndex = (currentIndex + direction + names.length) % names.length;
+  poseSelect.value = names[nextIndex];
+  if (poseNameInput) poseNameInput.value = poseSelect.value;
+  loadPose(poseSelect.value);
+}
+
+function createFrameThumbnail(name) {
+  const pose = animations[name];
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = name === poseSelect.value ? "frame-thumb selected" : "frame-thumb";
+  button.title = name;
+  const svg = svgEl("svg", { viewBox: "-220 -260 440 560", "aria-hidden": "true" });
+  const label = svgEl("text", { x: "-205", y: "238", class: "thumb-label" });
+  label.textContent = name.replace(/^.*?_(\d+)$/, "$1");
+  for (const key of layerOrder) {
+    const part = rigParts.get(key);
+    const values = pose?.[key];
+    if (!part?.imageHref || !values) continue;
+    const image = svgEl("image", {
+      href: part.imageHref,
+      x: String(part.viewBox.x),
+      y: String(part.viewBox.y),
+      width: String(part.viewBox.width),
+      height: String(part.viewBox.height),
+      transform: transformString(key, values),
+    });
+    svg.append(image);
+  }
+  svg.append(label);
+  button.append(svg);
+  button.addEventListener("click", () => {
+    poseSelect.value = name;
+    if (poseNameInput) poseNameInput.value = name;
+    loadPose(name);
+    renderFrameScrubber();
+  });
+  return button;
+}
+
+function renderFrameScrubber() {
+  if (!frameScrubber || !rigParts.size) return;
+  frameScrubber.replaceChildren();
+  const names = clipFrameNames();
+  for (const name of names) frameScrubber.append(createFrameThumbnail(name));
 }
 
 function savePose() {
-  const defaultName = poseSelect.value || "m_mid_swing";
-  const name = prompt("Pose name", defaultName);
-  if (!name) return;
+  const name = cleanPoseName(poseNameInput?.value || poseSelect.value || "m_mid_swing");
+  if (!name) {
+    poseNameInput?.focus();
+    return;
+  }
   pushUndo();
-  animations[name.trim().replace(/\s+/g, "_")] = cloneRigValues();
+  animations[name] = cloneRigValues();
   renderPoseSelect();
-  poseSelect.value = name.trim().replace(/\s+/g, "_");
+  poseSelect.value = name;
+  if (poseNameInput) poseNameInput.value = name;
   updateOutput();
+  updateOnionSkin();
 }
 
 function loadPose(name) {
@@ -710,15 +977,47 @@ function loadPose(name) {
   applyAllTransforms();
   renderPartControls();
   updateOutput();
+  updateOnionSkin();
+}
+
+function duplicatePose() {
+  const sourceName = poseSelect.value || "m_mid_swing";
+  if (!animations[sourceName]) return;
+  const nextName = uniquePoseName(`${sourceName}_copy`);
+  pushUndo();
+  animations[nextName] = cloneRigValues(animations[sourceName]);
+  renderPoseSelect();
+  poseSelect.value = nextName;
+  if (poseNameInput) poseNameInput.value = nextName;
+  updateOutput();
+  updateOnionSkin();
 }
 
 function deletePose() {
   const name = poseSelect.value;
-  if (!name || name === "m_mid_swing" || Object.keys(animations).length <= 1) return;
+  if (!name || name === "m_mid_swing" || poseNames().length <= 1) return;
   pushUndo();
   delete animations[name];
   renderPoseSelect();
   updateOutput();
+  updateOnionSkin();
+}
+
+function updateOnionSkin() {
+  if (!onionPrevGroup || !onionNextGroup) return;
+  const names = poseNames();
+  const currentName = poseSelect.value;
+  const currentIndex = names.indexOf(currentName);
+  const shouldShow = onionVisible && names.length > 1 && currentIndex >= 0;
+  onionPrevGroup.style.display = shouldShow ? "block" : "none";
+  onionNextGroup.style.display = shouldShow ? "block" : "none";
+  if (!shouldShow) return;
+  const prevPose = animations[names[(currentIndex - 1 + names.length) % names.length]];
+  const nextPose = animations[names[(currentIndex + 1) % names.length]];
+  for (const key of allPartKeys) {
+    applyOnionTransform(key, prevPose, "prev");
+    applyOnionTransform(key, nextPose, "next");
+  }
 }
 
 function lerp(a, b, t) {
@@ -746,9 +1045,10 @@ function updatePreview(values = rigValues) {
 
 function updatePreviewLoop(now) {
   if (previewPlaying) {
-    const names = Object.keys(animations);
+    const names = clipFrameNames();
     if (names.length) {
-      const duration = 850;
+      const selectedClip = clips[clipSelect?.value];
+      const duration = 1000 / Math.max(1, selectedClip?.fps || 1.18);
       const phase = ((now - previewStart) / duration) % names.length;
       const index = Math.floor(phase);
       const nextIndex = (index + 1) % names.length;
@@ -768,8 +1068,21 @@ async function loadPart(definition) {
   const href = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(strippedSvg)}`;
   const group = svgEl("g", { "data-part": definition.key });
   const previewGroup = svgEl("g", { "data-preview-part": definition.key });
+  const onionPrevPartGroup = svgEl("g", { "data-onion-prev-part": definition.key });
+  const onionNextPartGroup = svgEl("g", { "data-onion-next-part": definition.key });
   group.classList.add("rig-part");
+  if (leftSidePartKeys.has(definition.key)) {
+    group.classList.add("left-side-part");
+    previewGroup.classList.add("left-side-part");
+    onionPrevPartGroup.classList.add("left-side-part");
+    onionNextPartGroup.classList.add("left-side-part");
+  }
   group.addEventListener("pointerdown", (event) => beginDrag(event, definition.key));
+  group.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    selectPart(definition.key, "isolate");
+  });
   const hitbox = svgEl("rect", {
     x: String(viewBox.x),
     y: String(viewBox.y),
@@ -793,6 +1106,22 @@ async function loadPart(definition) {
     height: String(viewBox.height),
     class: "part-image",
   });
+  const onionPrevImage = svgEl("image", {
+    href,
+    x: String(viewBox.x),
+    y: String(viewBox.y),
+    width: String(viewBox.width),
+    height: String(viewBox.height),
+    class: "part-image onion-image",
+  });
+  const onionNextImage = svgEl("image", {
+    href,
+    x: String(viewBox.x),
+    y: String(viewBox.y),
+    width: String(viewBox.width),
+    height: String(viewBox.height),
+    class: "part-image onion-image",
+  });
   const outline = svgEl("rect", {
     x: String(viewBox.x),
     y: String(viewBox.y),
@@ -802,6 +1131,8 @@ async function loadPart(definition) {
   });
   group.append(hitbox, image, outline);
   previewGroup.append(previewImage);
+  onionPrevPartGroup.append(onionPrevImage);
+  onionNextPartGroup.append(onionNextImage);
 
   for (const marker of markers) {
     const circle = svgEl("circle", {
@@ -815,7 +1146,18 @@ async function loadPart(definition) {
 
   rigPartsGroup.append(group);
   previewPartsGroup.append(previewGroup);
-  rigParts.set(definition.key, { definition, group, previewGroup, viewBox, markers });
+  onionPrevGroup.append(onionPrevPartGroup);
+  onionNextGroup.append(onionNextPartGroup);
+  rigParts.set(definition.key, {
+    definition,
+    group,
+    previewGroup,
+    onionPrevGroup: onionPrevPartGroup,
+    onionNextGroup: onionNextPartGroup,
+    imageHref: href,
+    viewBox,
+    markers,
+  });
   applyPartTransform(definition.key);
   applyPreviewTransform(definition.key);
   applyLayerOrder();
@@ -829,7 +1171,13 @@ async function init() {
     partSelect.append(option);
     await loadPart(definition);
   }
-  loadSavedRig();
+  const loadedFileRig = await loadFileRig();
+  const loadedDraftRig = loadedFileRig ? false : loadDraftRig();
+  rigDataStatusEl.textContent = loadedDraftRig
+    ? "Loaded browser draft"
+    : loadedFileRig
+      ? "Loaded data/m-rig.json"
+      : "Using built-in defaults";
   animations.m_mid_swing = animations.m_mid_swing || cloneRigValues();
   partSelect.value = selectedPartKey;
   partSelect.addEventListener("change", () => selectPart(partSelect.value));
@@ -858,15 +1206,11 @@ async function init() {
     updateOutput();
     outputEl.select();
   });
-  importButton.addEventListener("click", () => {
-    try {
-      pushUndo();
-      applyImportedData(JSON.parse(outputEl.value));
-      saveRig();
-    } catch {
-      outputEl.focus();
-    }
-  });
+  downloadButton.addEventListener("click", downloadRigData);
+  importButton.addEventListener("click", applyRigCode);
+  copyRigButton.addEventListener("click", copyRigCode);
+  pasteRigButton.addEventListener("click", pasteRigCode);
+  applyRigCodeButton.addEventListener("click", applyRigCode);
   toggleMarkersButton.addEventListener("click", () => {
     markersVisible = !markersVisible;
     toggleMarkersButton.textContent = markersVisible ? "Hide joints" : "Show joints";
@@ -874,9 +1218,43 @@ async function init() {
       marker.style.display = markersVisible ? "" : "none";
     }
   });
-  poseSelect.addEventListener("change", () => loadPose(poseSelect.value));
+  poseSelect.addEventListener("change", () => {
+    if (poseNameInput) poseNameInput.value = poseSelect.value;
+    updateOnionSkin();
+  });
+  clipSelect.addEventListener("change", () => {
+    previewStart = performance.now();
+    renderPoseSelect();
+    const names = clipFrameNames();
+    if (names[0]) {
+      poseSelect.value = names[0];
+      if (poseNameInput) poseNameInput.value = names[0];
+      loadPose(names[0]);
+      updateOnionSkin();
+    }
+  });
+  prevFrameButton.addEventListener("click", () => stepClipFrame(-1));
+  nextFrameButton.addEventListener("click", () => stepClipFrame(1));
+  loadPoseButton.addEventListener("click", () => loadPose(poseSelect.value));
   savePoseButton.addEventListener("click", savePose);
+  duplicatePoseButton.addEventListener("click", duplicatePose);
   deletePoseButton.addEventListener("click", deletePose);
+  showOnionInput.addEventListener("change", () => {
+    onionVisible = showOnionInput.checked;
+    updateOnionSkin();
+  });
+  nudgeControls.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    const amount = event.shiftKey ? 10 : 1;
+    const direction = button.dataset.nudge;
+    const rotation = Number(button.dataset.rotate || 0);
+    if (direction === "up") nudgeSelection(0, -amount);
+    if (direction === "down") nudgeSelection(0, amount);
+    if (direction === "left") nudgeSelection(-amount, 0);
+    if (direction === "right") nudgeSelection(amount, 0);
+    if (rotation) nudgeSelection(0, 0, rotation * amount);
+  });
   playPreviewButton.addEventListener("click", () => {
     previewPlaying = !previewPlaying;
     previewStart = performance.now();
@@ -905,12 +1283,35 @@ async function init() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       undo();
+      return;
+    }
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+    const amount = event.shiftKey ? 10 : 1;
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      nudgeSelection(0, -amount);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      nudgeSelection(0, amount);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      nudgeSelection(-amount, 0);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      nudgeSelection(amount, 0);
+    } else if (event.key === "," || event.key === "<") {
+      event.preventDefault();
+      nudgeSelection(0, 0, -amount);
+    } else if (event.key === "." || event.key === ">") {
+      event.preventDefault();
+      nudgeSelection(0, 0, amount);
     }
   });
   applyLayerOrder();
   renderPartControls();
   renderGroupsList();
   renderPoseSelect();
+  renderClipSelect();
   selectPart(selectedPartKey);
   updateOutput();
   requestAnimationFrame(updatePreviewLoop);
