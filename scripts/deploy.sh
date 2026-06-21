@@ -16,6 +16,11 @@ rsync -az --delete \
   --exclude ".DS_Store" \
   --exclude ".last-deploy-watch" \
   --exclude "scripts/" \
+  --exclude "tools/" \
+  --exclude "unity-transfer/" \
+  --exclude "Hooked_Unity_Transfer.zip" \
+  --exclude "server.out.log" \
+  --exclude "server.err.log" \
   -e "ssh -i ${SSH_KEY} -p ${REMOTE_PORT}" \
   ./ "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
 

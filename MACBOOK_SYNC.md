@@ -85,7 +85,6 @@ Open:
 
 ```text
 http://127.0.0.1:8765/index.html
-http://127.0.0.1:8765/character-rig.html
 ```
 
 If files look stale, add a cache token:

@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.21";
+const GAME_VERSION = "v0.5.26";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -37,12 +37,6 @@ const buildZoomInput = document.querySelector("#build-zoom");
 const pixelateToggleButton = document.querySelector("#pixelate-toggle");
 const pixelateIntensityInput = document.querySelector("#pixelate-intensity");
 const pixelateIntensityValue = document.querySelector("#pixelate-intensity-value");
-const characterScaleInput = document.querySelector("#character-scale");
-const characterTorsoInput = document.querySelector("#character-torso");
-const characterHeadInput = document.querySelector("#character-head");
-const characterLimbsInput = document.querySelector("#character-limbs");
-const characterRibbonInput = document.querySelector("#character-ribbon");
-const characterEditorResetButton = document.querySelector("#character-reset");
 const levelCompletePanel = document.querySelector("#level-complete");
 const completeDeathsEl = document.querySelector("#complete-deaths");
 const completeMultiplierEl = document.querySelector("#complete-multiplier");
@@ -54,7 +48,6 @@ const jeremyFireworksEl = document.querySelector("#jeremy-fireworks");
 const anchorStorageKey = "hooked.anchor.layout.v5";
 const editorLayoutStorageKey = "hooked.editor.layout.v1";
 const editorLayoutStoragePrefix = "hooked.editor.layout.v2.";
-const characterSettingsStorageKey = "hooked.character.settings.v2";
 
 const config = {
   gravity: -33,
@@ -160,28 +153,13 @@ const config = {
   glbCharacterPath: "./assets/models/m_character.glb",
   freezeGlbCharacterPose: false,
   useRestRelativeGlbPose: true,
-  useSvgCharacter: false,
-  svgCharacterOverlay: false,
-  svgCharacterUseRigData: true,
-  hidePlaceholderWithSvgOverlay: false,
-  svgRigScale: 0.012,
-  svgRigTargetHeight: 2.32,
-  svgOverlayAutoFit: false,
-  svgOverlayTargetHeightScale: 1.05,
-  svgSwingRotationMax: 0.72,
+  glbPoseSmoothing: 18,
   pixelateEnabled: false,
   pixelateIntensity: 0.45,
 };
 
-const defaultCharacterSettings = {
-  scale: 1,
-  torso: 1,
-  head: 1,
-  limbs: 1,
-  ribbon: 0.95,
-};
-
-const characterSettings = { ...defaultCharacterSettings };
+const characterVisualScale = 1;
+const ribbonLengthScale = 0.95;
 
 const pixelateSettingsStorageKey = "hooked.pixelate.settings.v1";
 const pixelateSettings = {
@@ -199,11 +177,6 @@ const editorUi = {
   zoom: config.cameraBaseZoom,
   pixelate: pixelateSettings.enabled,
   pixelateIntensity: pixelateSettings.intensity,
-  characterScale: characterSettings.scale,
-  characterTorso: characterSettings.torso,
-  characterHead: characterSettings.head,
-  characterLimbs: characterSettings.limbs,
-  characterRibbon: characterSettings.ribbon,
 };
 
 let tweakPane = null;
@@ -679,16 +652,6 @@ window.HookedDebug = {
   },
   setSlowMotion(enabled) {
     debugSettings.timeScale = enabled ? 0.35 : 1;
-  },
-  setSvgCharacter(enabled) {
-    config.useSvgCharacter = enabled;
-    svgPuppet.group.visible = svgPuppet.loaded && (enabled || config.svgCharacterOverlay);
-    setPlaceholderCharacterVisible(shouldShowPlaceholderCharacter());
-  },
-  setSvgOverlay(enabled) {
-    config.svgCharacterOverlay = enabled;
-    svgPuppet.group.visible = svgPuppet.loaded && (config.useSvgCharacter || enabled);
-    setPlaceholderCharacterVisible(shouldShowPlaceholderCharacter());
   },
 };
 
@@ -1220,14 +1183,12 @@ function createNinjaTexture() {
 }
 
 const playerMesh = new THREE.Group();
-const playerBody = new THREE.Group();
 const playerAssetRoot = new THREE.Group();
 const playerRibbonLayer = new THREE.Group();
+let playerPoseRotationSmoothed = 0;
 playerMesh.renderOrder = 36;
-playerBody.visible = !config.useGlbCharacter;
 playerAssetRoot.renderOrder = 36;
 playerAssetRoot.visible = false;
-playerMesh.add(playerBody);
 playerMesh.add(playerAssetRoot);
 playerMesh.add(playerRibbonLayer);
 addGameplay(playerMesh);
@@ -1265,7 +1226,6 @@ const glbPivotNames = {
 
 function syncCharacterSourceVisibility() {
   const showGlbCharacter = config.useGlbCharacter && glbCharacter.loaded;
-  playerBody.visible = !showGlbCharacter && !config.debugGlbNeutralOnly;
   playerAssetRoot.visible = showGlbCharacter;
   playerRibbonLayer.visible = !config.debugGlbNeutralOnly;
   for (const marker of glbCharacter.debugMarkers) {
@@ -1273,24 +1233,32 @@ function syncCharacterSourceVisibility() {
   }
 }
 
-function syncGlbCharacterTransform(facing = state.facing, flourishFlip = playerBody.rotation.z) {
+function syncGlbCharacterTransform(facing = state.facing, flourishFlip = 0) {
   playerAssetRoot.scale.set(
-    facing * characterSettings.scale * glbCharacterBaseScale,
-    characterSettings.scale * glbCharacterBaseScale,
-    characterSettings.scale * glbCharacterBaseScale,
+    facing * characterVisualScale * glbCharacterBaseScale,
+    characterVisualScale * glbCharacterBaseScale,
+    characterVisualScale * glbCharacterBaseScale,
   );
   playerAssetRoot.rotation.z = flourishFlip;
-  playerRibbonLayer.scale.set(facing * characterSettings.scale, characterSettings.scale, 1);
+  playerRibbonLayer.scale.set(facing * characterVisualScale, characterVisualScale, 1);
   playerRibbonLayer.rotation.z = flourishFlip;
 }
 
-function setGlbPivotAngle(pivot, angle) {
-  if (pivot) pivot.rotation.z = angle;
+function setGlbPivotAngle(pivot, angle, immediate = false) {
+  if (!pivot) return;
+  const target = normalizeAngle(angle);
+  if (immediate || glbPoseSmoothingAlpha >= 0.999) {
+    pivot.rotation.z = target;
+    return;
+  }
+  pivot.rotation.z = normalizeAngle(
+    pivot.rotation.z + normalizeAngle(target - pivot.rotation.z) * glbPoseSmoothingAlpha,
+  );
 }
 
-function resetGlbPivotAngles() {
+function resetGlbPivotAngles(immediate = true) {
   for (const pivot of Object.values(glbCharacter.pivots)) {
-    setGlbPivotAngle(pivot, 0);
+    setGlbPivotAngle(pivot, 0, immediate);
   }
 }
 
@@ -1323,15 +1291,19 @@ const glbBindPoseAngles = {
   rightAnkle: 0,
 };
 
+let glbPoseSmoothingAlpha = 1;
+
 const glbJointLimits = {
   torso: [-0.24, 0.24],
   neck: [-0.24, 0.24],
-  shoulder: [-1.45, 1.25],
-  elbow: [-1.65, 1.65],
+  shoulder: [-2.45, 2.45],
+  loadShoulder: [-2.95, 2.95],
+  elbow: [-1.85, 1.85],
+  loadElbow: [-0.32, 0.32],
   wrist: [-0.42, 0.42],
-  hip: [-1.05, 1.15],
-  knee: [-1.45, 1.45],
-  ankle: [-0.5, 0.5],
+  hip: [-0.95, 0.95],
+  knee: [-1.05, 0.02],
+  ankle: [-0.36, 0.36],
 };
 
 function normalizeAngle(angle) {
@@ -1397,6 +1369,87 @@ function setGlbTwoBonePose({
   return { upperWorld, lowerWorld };
 }
 
+function setGlbAlignedTwoBonePose({
+  rootPivot,
+  midPivot,
+  endPivot,
+  upperName,
+  targetAngle,
+  parentWorldAngle = 0,
+  jointBend = 0,
+  upperLimit,
+  lowerLimit,
+}) {
+  if (!rootPivot || !midPivot || !endPivot) return { upperWorld: targetAngle, lowerWorld: targetAngle };
+  const upperRestAngle = localAngleTo(midPivot);
+  const lowerRestAngle = localAngleTo(endPivot);
+  const upperRotation = clampAngle(targetAngle - parentWorldAngle - upperRestAngle, upperLimit);
+  const upperWorld = parentWorldAngle + upperRestAngle + upperRotation;
+  const lowerRotation = clampAngle(targetAngle + jointBend - upperWorld - lowerRestAngle, lowerLimit);
+  const lowerWorld = upperWorld + lowerRestAngle + lowerRotation;
+  setGlbPivotAngle(rootPivot, glbBindPoseAngles[upperName] + upperRotation);
+  setGlbPivotAngle(midPivot, lowerRotation);
+  return { upperWorld, lowerWorld };
+}
+
+function setGlbLegSwingPose(pivots, {
+  hooked,
+  airborne,
+  swingFlow,
+  swingArcLift,
+  fallTuck,
+  tuck,
+  ropeX,
+}) {
+  const swingAmount = Math.abs(swingFlow);
+  let trail = 0;
+  let leftHip = 0.02;
+  let rightHip = -0.015;
+  let leftKnee = -0.03;
+  let rightKnee = -0.025;
+  let leftAnkle = -0.02;
+  let rightAnkle = 0.02;
+
+  if (hooked) {
+    trail = clampJoint(-swingFlow * 0.46 - ropeX * 0.1 + swingArcLift * 0.12, -0.52, 0.52);
+    const kneeFlex = clampJoint(0.12 + swingAmount * 0.34 + Math.max(0, fallTuck) * 0.14, 0.06, 0.62);
+    leftHip = trail + 0.1;
+    rightHip = trail - 0.09;
+    leftKnee = -kneeFlex;
+    rightKnee = -kneeFlex * 0.82;
+    leftAnkle = clampJoint(-trail * 0.18 + kneeFlex * 0.12, -0.26, 0.26);
+    rightAnkle = clampJoint(-trail * 0.14 + kneeFlex * 0.1, -0.24, 0.24);
+  } else if (airborne) {
+    trail = clampJoint(-swingFlow * 0.38 + swingArcLift * 0.2, -0.55, 0.55);
+    const kneeFlex = clampJoint(0.1 + Math.max(0, fallTuck) * 0.28, 0.04, 0.48);
+    leftHip = trail + 0.1;
+    rightHip = trail - 0.08;
+    leftKnee = -kneeFlex;
+    rightKnee = -kneeFlex * 0.75;
+    leftAnkle = clampJoint(-trail * 0.2 + kneeFlex * 0.12, -0.26, 0.26);
+    rightAnkle = clampJoint(-trail * 0.16 + kneeFlex * 0.1, -0.24, 0.24);
+  }
+
+  if (tuck > 0) {
+    const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
+    leftHip = THREE.MathUtils.lerp(leftHip, 0.82, compact);
+    rightHip = THREE.MathUtils.lerp(rightHip, 0.66, compact);
+    leftKnee = THREE.MathUtils.lerp(leftKnee, -1.05, compact);
+    rightKnee = THREE.MathUtils.lerp(rightKnee, -0.98, compact);
+    leftAnkle = THREE.MathUtils.lerp(leftAnkle, 0.28, compact);
+    rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.24, compact);
+  }
+
+  setGlbPivotAngle(pivots.leftHip, clampAngle(leftHip, glbJointLimits.hip));
+  setGlbPivotAngle(pivots.rightHip, clampAngle(rightHip, glbJointLimits.hip));
+  setGlbPivotAngle(pivots.leftKnee, clampAngle(leftKnee, glbJointLimits.knee));
+  setGlbPivotAngle(pivots.rightKnee, clampAngle(rightKnee, glbJointLimits.knee));
+  setGlbPivotAngle(pivots.leftAnkle, clampAngle(leftAnkle, glbJointLimits.ankle));
+  setGlbPivotAngle(pivots.rightAnkle, clampAngle(rightAnkle, glbJointLimits.ankle));
+
+  return { leftAnkleWorld: leftHip + leftKnee, rightAnkleWorld: rightHip + rightKnee };
+}
+
 function setGlbIdlePose(pivots, idleBreath, pelvisWorld, waistWorld, chestWorld) {
   setGlbPivotAngle(pivots.root, 0);
   setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
@@ -1411,10 +1464,10 @@ function setGlbIdlePose(pivots, idleBreath, pelvisWorld, waistWorld, chestWorld)
   setGlbPivotAngle(pivots.rightElbow, clampAngle(-0.03, glbJointLimits.elbow));
   setGlbPivotAngle(pivots.rightWrist, clampAngle(0.02, glbJointLimits.wrist));
   setGlbPivotAngle(pivots.leftHip, clampAngle(0.02, glbJointLimits.hip));
-  setGlbPivotAngle(pivots.leftKnee, clampAngle(0.015 + Math.max(0, idleBreath) * 0.015, glbJointLimits.knee));
+  setGlbPivotAngle(pivots.leftKnee, clampAngle(-0.025 - Math.max(0, idleBreath) * 0.012, glbJointLimits.knee));
   setGlbPivotAngle(pivots.leftAnkle, clampAngle(-0.02, glbJointLimits.ankle));
   setGlbPivotAngle(pivots.rightHip, clampAngle(-0.015, glbJointLimits.hip));
-  setGlbPivotAngle(pivots.rightKnee, clampAngle(0.012 + Math.max(0, -idleBreath) * 0.015, glbJointLimits.knee));
+  setGlbPivotAngle(pivots.rightKnee, clampAngle(-0.02 - Math.max(0, -idleBreath) * 0.012, glbJointLimits.knee));
   setGlbPivotAngle(pivots.rightAnkle, clampAngle(0.02, glbJointLimits.ankle));
 }
 
@@ -1458,15 +1511,44 @@ function setGlbRelativePose(now) {
   const ropeTarget = hooked
     ? (grappling ? getVisualGrapplePoint(state.anchor, scratchRopeEnd) : state.hookEnd)
     : null;
-  const ropeDirection = ropeTarget
+  let ropeDirectionWorld = ropeTarget
     ? scratchVelocityDirection.subVectors(ropeTarget, state.player).normalize()
     : scratchVelocityDirection.set(0.2 * state.facing, -0.98, 0).normalize();
-  const ropeX = ropeDirection.x * state.facing;
-  const ropeY = ropeDirection.y;
+  const shoulderWorld = characterScratchA;
+  if (hooked && ropeTarget && pivots.leftShoulder) {
+    playerMesh.updateWorldMatrix(true, true);
+    pivots.leftShoulder.getWorldPosition(shoulderWorld);
+    ropeDirectionWorld = scratchVelocityDirection.subVectors(ropeTarget, shoulderWorld);
+    if (ropeDirectionWorld.lengthSq() > 0.0001) {
+      ropeDirectionWorld.normalize();
+    } else {
+      ropeDirectionWorld.set(0.2 * state.facing, 0.98, 0).normalize();
+    }
+  }
+  let ropeDirectionLocal = characterScratchB.copy(ropeDirectionWorld);
+  if (hooked && ropeTarget && pivots.leftShoulder && playerAssetRoot) {
+    const localTarget = characterScratchB.copy(ropeTarget);
+    const localShoulder = characterScratchC.copy(shoulderWorld);
+    playerAssetRoot.worldToLocal(localTarget);
+    playerAssetRoot.worldToLocal(localShoulder);
+    ropeDirectionLocal = localTarget.sub(localShoulder);
+    if (ropeDirectionLocal.lengthSq() > 0.0001) {
+      ropeDirectionLocal.normalize();
+    } else {
+      ropeDirectionLocal.set(0.2, 0.98, 0).normalize();
+    }
+  } else {
+    ropeDirectionLocal.set(ropeDirectionWorld.x * state.facing, ropeDirectionWorld.y, 0).normalize();
+  }
+  const ropeX = ropeDirectionLocal.x;
+  const ropeY = ropeDirectionLocal.y;
+  const worldTangentX = -ropeDirectionWorld.y;
+  const worldTangentY = ropeDirectionWorld.x;
+  const tangentSpeed = state.velocity.x * worldTangentX + state.velocity.y * worldTangentY;
+  const swingFlow = clampJoint(tangentSpeed / 22, -1, 1);
+  const swingArcLift = clampJoint(state.velocity.y / 18, -0.45, 0.45);
   const leftArmLength = localLengthTo(pivots.leftElbow) + localLengthTo(pivots.leftWrist);
   const rightArmLength = localLengthTo(pivots.rightElbow) + localLengthTo(pivots.rightWrist);
-  const leftLegLength = localLengthTo(pivots.leftKnee) + localLengthTo(pivots.leftAnkle);
-  const rightLegLength = localLengthTo(pivots.rightKnee) + localLengthTo(pivots.rightAnkle);
 
   let leftHandTarget = {
     x: -0.04 + idleBreath * 0.01,
@@ -1478,72 +1560,60 @@ function setGlbRelativePose(now) {
     y: -rightArmLength * 0.72 + idleBreath * 0.025,
     bend: -1,
   };
-  let leftFootTarget = {
-    x: 0.06 - swing * 0.18,
-    y: -leftLegLength * 0.94,
-    bend: 1,
-  };
-  let rightFootTarget = {
-    x: -0.08 - swing * 0.14,
-    y: -rightLegLength * 0.9,
-    bend: -1,
-  };
 
   if (hooked) {
     leftHandTarget = {
-      x: ropeX * leftArmLength * 0.96,
-      y: ropeY * leftArmLength * 0.96,
-      bend: ropeX > 0 ? -1 : 1,
+      x: ropeX * leftArmLength * 0.99,
+      y: ropeY * leftArmLength * 0.99,
+      bend: 0,
     };
+    const balanceReach = clampJoint(Math.abs(swingFlow), 0, 1);
     rightHandTarget = {
-      x: -0.18 - swing * 0.2 - ropeX * 0.08,
-      y: -rightArmLength * (0.58 + fallTuck * 0.16) - ropeY * 0.08,
-      bend: -1,
-    };
-    leftFootTarget = {
-      x: -swing * 0.34 - ropeX * 0.16,
-      y: -leftLegLength * (0.74 - fallTuck * 0.18),
-      bend: 1,
-    };
-    rightFootTarget = {
-      x: -swing * 0.42 - ropeX * 0.22,
-      y: -rightLegLength * (0.82 - fallTuck * 0.12),
+      x: -ropeX * 0.18 - swingFlow * 0.34 - 0.12,
+      y: -rightArmLength * (0.5 + fallTuck * 0.12) + ropeY * 0.14 + balanceReach * 0.08,
       bend: -1,
     };
   } else if (airborne) {
     leftHandTarget = { x: 0.14 + swing * 0.12, y: -leftArmLength * 0.68 + fallTuck * 0.08, bend: 1 };
     rightHandTarget = { x: -0.2 - swing * 0.14, y: -rightArmLength * 0.62 + fallTuck * 0.08, bend: -1 };
-    leftFootTarget = { x: 0.2 + swing * 0.18, y: -leftLegLength * (0.78 - fallTuck * 0.16), bend: 1 };
-    rightFootTarget = { x: -0.18 + swing * 0.12, y: -rightLegLength * (0.82 - fallTuck * 0.12), bend: -1 };
   } else if (speed > 0.5) {
     const stride = Math.sin(now * 8.5) * clampJoint(speed / 20, 0, 0.28);
     leftHandTarget.x += stride * 0.12;
     rightHandTarget.x -= stride * 0.12;
-    leftFootTarget.x += stride * 0.34;
-    rightFootTarget.x -= stride * 0.3;
   }
 
   if (tuck > 0) {
     const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
     leftHandTarget = { x: 0.18, y: -leftArmLength * (0.42 - compact * 0.1), bend: 1 };
     rightHandTarget = { x: -0.18, y: -rightArmLength * (0.42 - compact * 0.1), bend: -1 };
-    leftFootTarget = { x: 0.22, y: -leftLegLength * (0.38 - compact * 0.12), bend: 1 };
-    rightFootTarget = { x: -0.22, y: -rightLegLength * (0.38 - compact * 0.12), bend: -1 };
   }
 
-  const leftArm = setGlbTwoBonePose({
-    rootPivot: pivots.leftShoulder,
-    midPivot: pivots.leftElbow,
-    endPivot: pivots.leftWrist,
-    upperName: "leftShoulder",
-    lowerName: "leftElbow",
-    targetX: leftHandTarget.x,
-    targetY: leftHandTarget.y,
-    parentWorldAngle: chestWorld,
-    bendSign: leftHandTarget.bend,
-    upperLimit: glbJointLimits.shoulder,
-    lowerLimit: glbJointLimits.elbow,
-  });
+  const ropeAngle = Math.atan2(ropeY, ropeX);
+  const leftArm = hooked
+    ? setGlbAlignedTwoBonePose({
+      rootPivot: pivots.leftShoulder,
+      midPivot: pivots.leftElbow,
+      endPivot: pivots.leftWrist,
+      upperName: "leftShoulder",
+      targetAngle: ropeAngle,
+      parentWorldAngle: chestWorld,
+      jointBend: clampJoint(-ropeX * 0.08, -0.12, 0.12),
+      upperLimit: glbJointLimits.loadShoulder,
+      lowerLimit: glbJointLimits.loadElbow,
+    })
+    : setGlbTwoBonePose({
+      rootPivot: pivots.leftShoulder,
+      midPivot: pivots.leftElbow,
+      endPivot: pivots.leftWrist,
+      upperName: "leftShoulder",
+      lowerName: "leftElbow",
+      targetX: leftHandTarget.x,
+      targetY: leftHandTarget.y,
+      parentWorldAngle: chestWorld,
+      bendSign: leftHandTarget.bend,
+      upperLimit: glbJointLimits.shoulder,
+      lowerLimit: glbJointLimits.elbow,
+    });
   const rightArm = setGlbTwoBonePose({
     rootPivot: pivots.rightShoulder,
     midPivot: pivots.rightElbow,
@@ -1557,40 +1627,20 @@ function setGlbRelativePose(now) {
     upperLimit: glbJointLimits.shoulder,
     lowerLimit: glbJointLimits.elbow,
   });
-  const leftLeg = setGlbTwoBonePose({
-    rootPivot: pivots.leftHip,
-    midPivot: pivots.leftKnee,
-    endPivot: pivots.leftAnkle,
-    upperName: "leftHip",
-    lowerName: "leftKnee",
-    targetX: leftFootTarget.x,
-    targetY: leftFootTarget.y,
-    parentWorldAngle: pelvisWorld,
-    bendSign: leftFootTarget.bend,
-    upperLimit: glbJointLimits.hip,
-    lowerLimit: glbJointLimits.knee,
-  });
-  const rightLeg = setGlbTwoBonePose({
-    rootPivot: pivots.rightHip,
-    midPivot: pivots.rightKnee,
-    endPivot: pivots.rightAnkle,
-    upperName: "rightHip",
-    lowerName: "rightKnee",
-    targetX: rightFootTarget.x,
-    targetY: rightFootTarget.y,
-    parentWorldAngle: pelvisWorld,
-    bendSign: rightFootTarget.bend,
-    upperLimit: glbJointLimits.hip,
-    lowerLimit: glbJointLimits.knee,
+  setGlbLegSwingPose(pivots, {
+    hooked,
+    airborne,
+    swingFlow,
+    swingArcLift,
+    fallTuck,
+    tuck,
+    ropeX,
   });
 
-  const ropeAngle = Math.atan2(ropeY, ropeX);
   setGlbPivotAngle(pivots.leftWrist, hooked
     ? clampAngle(ropeAngle - leftArm.lowerWorld, glbJointLimits.wrist)
     : clampAngle(-0.08 + idleBreath * 0.03, glbJointLimits.wrist));
   setGlbPivotAngle(pivots.rightWrist, clampAngle(-rightArm.lowerWorld * 0.08, glbJointLimits.wrist));
-  setGlbPivotAngle(pivots.leftAnkle, clampAngle(-leftLeg.lowerWorld * 0.1, glbJointLimits.ankle));
-  setGlbPivotAngle(pivots.rightAnkle, clampAngle(-rightLeg.lowerWorld * 0.1, glbJointLimits.ankle));
 }
 
 function lineAngle(line, startIndex = 0, endIndex = 1) {
@@ -1602,7 +1652,7 @@ function lineAngle(line, startIndex = 0, endIndex = 1) {
   return Math.atan2(by - ay, bx - ax);
 }
 
-function poseGlbCharacterFromPhysics(now) {
+function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
   if (!glbCharacter.loaded) return;
 
   if (config.debugGlbNeutralOnly) {
@@ -1610,45 +1660,18 @@ function poseGlbCharacterFromPhysics(now) {
     return;
   }
 
+  const smoothingRate = state.hookActive || state.grappled
+    ? config.glbPoseSmoothing
+    : config.glbPoseSmoothing * 0.72;
+  glbPoseSmoothingAlpha = 1 - Math.exp(-Math.max(dt, 0.001) * smoothingRate);
   if (config.useRestRelativeGlbPose) {
     setGlbRelativePose(now);
+    glbPoseSmoothingAlpha = 1;
     return;
   }
 
-  const pivots = glbCharacter.pivots;
-  const idleBreath = state.playerAnimation === "idleHang" ? Math.sin(now * 3.2) : 0;
-  const speed = Math.hypot(state.velocity.x, state.velocity.y);
-  const speedLean = THREE.MathUtils.clamp(state.velocity.x * state.facing * 0.018, -0.28, 0.32);
-  const verticalLean = THREE.MathUtils.clamp(state.velocity.y * 0.014, -0.24, 0.24);
-  const frontArmUpper = lineAngle(playerLimbs.frontArm, 0, 1);
-  const frontArmLower = lineAngle(playerLimbs.frontArm, 1, 2);
-  const backArmUpper = lineAngle(playerLimbs.backArm, 0, 1);
-  const backArmLower = lineAngle(playerLimbs.backArm, 1, 2);
-  const frontLegUpper = lineAngle(playerLimbs.frontLeg, 0, 1);
-  const frontLegLower = lineAngle(playerLimbs.frontLeg, 1, 2);
-  const backLegUpper = lineAngle(playerLimbs.backLeg, 0, 1);
-  const backLegLower = lineAngle(playerLimbs.backLeg, 1, 2);
-
-  const pelvisWorld = speedLean * 0.26 - verticalLean * 0.18;
-  const waistWorld = speedLean * 0.46 - verticalLean * 0.42 + idleBreath * 0.015;
-  const chestWorld = speedLean * 0.68 - verticalLean * 0.62 + idleBreath * 0.02;
-  setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
-  setGlbPivotAngle(pivots.waist, waistWorld - pelvisWorld);
-  setGlbPivotAngle(pivots.chest, chestWorld - waistWorld);
-  setGlbPivotAngle(pivots.neck, -chestWorld * 0.34);
-  setGlbPivotAngle(pivots.head, -chestWorld * 0.4 + idleBreath * 0.015);
-  setGlbPivotAngle(pivots.leftShoulder, frontArmUpper - chestWorld);
-  setGlbPivotAngle(pivots.leftElbow, frontArmLower - frontArmUpper);
-  setGlbPivotAngle(pivots.rightShoulder, backArmUpper - chestWorld);
-  setGlbPivotAngle(pivots.rightElbow, backArmLower - backArmUpper);
-  setGlbPivotAngle(pivots.leftHip, frontLegUpper - pelvisWorld);
-  setGlbPivotAngle(pivots.leftKnee, frontLegLower - frontLegUpper);
-  setGlbPivotAngle(pivots.rightHip, backLegUpper - pelvisWorld);
-  setGlbPivotAngle(pivots.rightKnee, backLegLower - backLegUpper);
-
-  const footCounter = THREE.MathUtils.clamp(speed / 28, 0, 0.38);
-  setGlbPivotAngle(pivots.leftAnkle, -frontLegLower + footCounter);
-  setGlbPivotAngle(pivots.rightAnkle, -backLegLower - footCounter * 0.6);
+  resetGlbPivotAngles(false);
+  glbPoseSmoothingAlpha = 1;
 }
 
 function loadGlbCharacter() {
@@ -1709,968 +1732,48 @@ function loadGlbCharacter() {
   );
 }
 
-const limbMaterial = new THREE.LineBasicMaterial({
-  color: 0xc98a19,
-  transparent: true,
-  opacity: 1,
-  depthTest: false,
-});
-const legMaterial = new THREE.LineBasicMaterial({
-  color: 0x0b1012,
-  transparent: true,
-  opacity: 1,
-  depthTest: false,
-});
-const playerLimbs = {
-  frontArm: new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]), limbMaterial.clone()),
-  backArm: new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]), limbMaterial.clone()),
-  frontLeg: new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]), legMaterial.clone()),
-  backLeg: new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]), legMaterial.clone()),
-};
-playerLimbs.backArm.material.opacity = 0.56;
-playerLimbs.backLeg.material.opacity = 0.64;
-for (const limb of Object.values(playerLimbs)) {
-  limb.frustumCulled = false;
-  limb.renderOrder = 25;
-  playerBody.add(limb);
-}
-
-const playerPalette = {
-  gold: 0xf1a91a,
-  goldLight: 0xffea69,
-  goldDark: 0x9a6518,
-  black: 0x0b1012,
-  charcoal: 0x20272b,
-  red: 0xff3b24,
-  redDark: 0x8f1410,
-  glow: 0xffff77,
-};
-const playerMaterials = Object.fromEntries(
-  Object.entries(playerPalette).map(([name, color]) => [
-    name,
-    new THREE.MeshBasicMaterial({
-      color,
-      depthTest: false,
-      transparent: true,
-      opacity: 1,
-    }),
-  ]),
-);
-const playerDotGeometry = new THREE.CircleGeometry(0.5, 14);
-const playerPlateGeometry = new THREE.PlaneGeometry(1, 1);
-const playerRingGeometry = new THREE.TorusGeometry(0.5, 0.11, 8, 18);
-const playerLineMaterial = new THREE.LineBasicMaterial({
-  color: playerPalette.red,
-  transparent: true,
-  opacity: 0.94,
-  depthTest: false,
-});
-
-function createPlayerDot(name, x, y, radius, materialName, z = 0.12) {
-  const dot = new THREE.Mesh(playerDotGeometry, playerMaterials[materialName]);
-  dot.name = name;
-  dot.position.set(x, y, z);
-  dot.scale.set(radius, radius, 1);
-  dot.renderOrder = 28;
-  dot.frustumCulled = false;
-  playerBody.add(dot);
-  return dot;
-}
-
-function createPlayerPlate(name, width, height, materialName, z = 0.13) {
-  const plate = new THREE.Mesh(playerPlateGeometry, playerMaterials[materialName]);
-  plate.name = name;
-  plate.scale.set(width, height, 1);
-  plate.position.z = z;
-  plate.renderOrder = 26;
-  plate.frustumCulled = false;
-  playerBody.add(plate);
-  return plate;
-}
-
-function createPlayerShape(name, points, materialName, z = 0.13) {
-  const shape = new THREE.Shape();
-  shape.moveTo(points[0][0], points[0][1]);
-  for (let index = 1; index < points.length; index += 1) shape.lineTo(points[index][0], points[index][1]);
-  shape.closePath();
-  const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), playerMaterials[materialName]);
-  mesh.name = name;
-  mesh.position.z = z;
-  mesh.renderOrder = 27;
-  mesh.frustumCulled = false;
-  playerBody.add(mesh);
-  return mesh;
-}
-
-function createPlayerRing(name, materialName = "black", z = 0.29) {
-  const ring = new THREE.Mesh(playerRingGeometry, playerMaterials[materialName]);
-  ring.name = name;
-  ring.position.z = z;
-  ring.renderOrder = 29;
-  ring.frustumCulled = false;
-  playerBody.add(ring);
-  return ring;
-}
-
-function createPlayerLine(name, color = playerPalette.red, opacity = 0.94, pointCount = 4) {
+function createRibbonLine(name, color, opacity, pointCount = 12) {
   const line = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints(Array.from({ length: pointCount }, () => new THREE.Vector3())),
     new THREE.LineBasicMaterial({
       color,
       transparent: true,
       opacity,
-      linewidth: name.toLowerCase().includes("scarf") ? 3 : 1,
+      linewidth: 4,
       depthTest: false,
     }),
   );
   line.name = name;
-  line.renderOrder = 24;
+  line.renderOrder = 54;
   line.frustumCulled = false;
-  playerBody.add(line);
+  playerRibbonLayer.add(line);
   return line;
-}
-
-function setPlayerLine(line, startX, startY, endX, endY, z = 0.1) {
-  const positions = line.geometry.attributes.position;
-  positions.setXYZ(0, startX, startY, z);
-  positions.setXYZ(1, startX + (endX - startX) * 0.33, startY + (endY - startY) * 0.33, z);
-  positions.setXYZ(2, startX + (endX - startX) * 0.66, startY + (endY - startY) * 0.66, z);
-  positions.setXYZ(3, endX, endY, z);
-  positions.needsUpdate = true;
 }
 
 function setRibbonLine(line, points, z = 0.1) {
   const positions = line.geometry.attributes.position;
+  let lastPoint = points[0] ?? [0, 0];
   for (let index = 0; index < positions.count; index += 1) {
-    const point = points[index];
-    positions.setXYZ(index, point[0], point[1], z);
+    lastPoint = points[index] ?? lastPoint;
+    positions.setXYZ(index, lastPoint[0], lastPoint[1], z);
   }
   positions.needsUpdate = true;
 }
 
-const playerRig = {
-  plates: {
-    neckStack: createPlayerPlate("neckStack", 0.18, 0.44, "charcoal", 0.16),
-    neckFront: createPlayerPlate("neckFront", 0.08, 0.34, "black", 0.2),
-    helmetShell: createPlayerShape("helmetShell", [[-0.22, 0.16], [0.0, 0.24], [0.2, 0.12], [0.23, -0.1], [0.12, -0.24], [-0.05, -0.16], [-0.2, -0.05]], "gold", 0.24),
-    helmetMask: createPlayerShape("helmetMask", [[-0.16, 0.06], [-0.03, 0.08], [0.13, -0.12], [0.05, -0.2], [-0.08, -0.08]], "black", 0.27),
-    helmetBeak: createPlayerPlate("helmetBeak", 0.24, 0.08, "goldLight", 0.27),
-    helmetBackPlate: createPlayerPlate("helmetBackPlate", 0.24, 0.22, "gold", 0.19),
-    helmetJaw: createPlayerPlate("helmetJaw", 0.16, 0.08, "goldLight", 0.28),
-    torsoCore: createPlayerPlate("torsoCore", 0.28, 0.56, "charcoal", 0.13),
-    chestArmor: createPlayerPlate("chestArmor", 0.4, 0.28, "gold", 0.18),
-    chestShell: createPlayerShape("chestShell", [[-0.22, 0.08], [-0.05, 0.18], [0.24, 0.1], [0.31, -0.08], [0.05, -0.22], [-0.18, -0.12]], "goldLight", 0.22),
-    chestCoreInset: createPlayerShape("chestCoreInset", [[-0.1, 0.15], [0.08, 0.1], [0.06, -0.18], [-0.12, -0.12]], "black", 0.23),
-    chestWing: createPlayerPlate("chestWing", 0.22, 0.22, "goldLight", 0.2),
-    abdomenPlate: createPlayerPlate("abdomenPlate", 0.27, 0.22, "black", 0.19),
-    pelvisArmor: createPlayerPlate("pelvisArmor", 0.26, 0.18, "gold", 0.2),
-    leftUpperArm: createPlayerPlate("leftUpperArmPlate", 0.13, 0.42, "gold", 0.18),
-    leftShoulderShell: createPlayerShape("leftShoulderShell", [[-0.12, 0.1], [0.1, 0.13], [0.16, -0.02], [0.08, -0.14], [-0.12, -0.1], [-0.16, 0.03]], "goldLight", 0.24),
-    leftLowerArm: createPlayerPlate("leftLowerArmPlate", 0.12, 0.46, "goldLight", 0.18),
-    leftForearmDecalA: createPlayerPlate("leftForearmDecalA", 0.035, 0.12, "red", 0.22),
-    leftForearmDecalB: createPlayerPlate("leftForearmDecalB", 0.035, 0.12, "redDark", 0.22),
-    rightUpperArm: createPlayerPlate("rightUpperArmPlate", 0.11, 0.38, "goldDark", 0.1),
-    rightLowerArm: createPlayerPlate("rightLowerArmPlate", 0.1, 0.42, "goldDark", 0.1),
-    leftUpperLeg: createPlayerPlate("leftUpperLegPlate", 0.16, 0.52, "gold", 0.18),
-    leftHipShell: createPlayerShape("leftHipShell", [[-0.16, 0.06], [0.1, 0.1], [0.14, -0.08], [0.0, -0.18], [-0.18, -0.08]], "gold", 0.23),
-    leftLowerLeg: createPlayerPlate("leftLowerLegPlate", 0.13, 0.5, "goldLight", 0.18),
-    leftThighDecalA: createPlayerPlate("leftThighDecalA", 0.045, 0.13, "red", 0.23),
-    leftThighDecalB: createPlayerPlate("leftThighDecalB", 0.045, 0.13, "redDark", 0.23),
-    rightUpperLeg: createPlayerPlate("rightUpperLegPlate", 0.13, 0.46, "goldDark", 0.09),
-    rightLowerLeg: createPlayerPlate("rightLowerLegPlate", 0.11, 0.46, "goldDark", 0.09),
-    leftFootSole: createPlayerPlate("leftFootSole", 0.28, 0.075, "goldLight", 0.22),
-    rightFootSole: createPlayerPlate("rightFootSole", 0.22, 0.06, "goldDark", 0.1),
-    frontFingerA: createPlayerPlate("frontFingerA", 0.03, 0.14, "goldLight", 0.24),
-    frontFingerB: createPlayerPlate("frontFingerB", 0.025, 0.12, "gold", 0.24),
-    backFingerA: createPlayerPlate("backFingerA", 0.025, 0.12, "goldDark", 0.1),
-  },
-  rings: {
-    eye: createPlayerRing("eyeRing", "black", 0.31),
-    shoulderFront: createPlayerRing("shoulderFrontRing", "black", 0.3),
-    elbowFront: createPlayerRing("elbowFrontRing", "black", 0.3),
-    kneeFront: createPlayerRing("kneeFrontRing", "black", 0.3),
-    ankleFront: createPlayerRing("ankleFrontRing", "black", 0.3),
-    shoulderBack: createPlayerRing("shoulderBackRing", "black", 0.12),
-    kneeBack: createPlayerRing("kneeBackRing", "black", 0.12),
-  },
-  dots: {
-    torsoShadow: createPlayerDot("torsoShadow", 0.03, 0.18, 0.38, "black", 0.09),
-    torsoGold: createPlayerDot("torsoGold", 0.08, 0.34, 0.31, "gold", 0.14),
-    chestPlate: createPlayerDot("chestPlate", 0.18, 0.45, 0.18, "goldLight", 0.16),
-    waist: createPlayerDot("waist", 0.05, -0.14, 0.24, "black", 0.15),
-    helmet: createPlayerDot("helmet", -0.02, 0.96, 0.34, "gold", 0.2),
-    helmetBack: createPlayerDot("helmetBack", -0.14, 0.92, 0.24, "goldDark", 0.17),
-    visor: createPlayerDot("visor", 0.14, 1.0, 0.13, "black", 0.22),
-    helmetShine: createPlayerDot("helmetShine", -0.1, 1.08, 0.08, "goldLight", 0.24),
-    eyeCore: createPlayerDot("eyeCore", 0.14, 1.0, 0.045, "red", 0.26),
-    eyeGlow: createPlayerDot("eyeGlow", 0.14, 1.0, 0.075, "glow", 0.25),
-    scarfKnot: createPlayerDot("scarfKnot", -0.26, 0.88, 0.08, "red", 0.22),
-    shoulderBack: createPlayerDot("shoulderBack", -0.12, 0.62, 0.13, "goldDark", 0.11),
-    shoulderFront: createPlayerDot("shoulderFront", 0.22, 0.61, 0.15, "gold", 0.2),
-    forearmGrapple: createPlayerDot("forearmGrapple", 0.5, 0.18, 0.12, "charcoal", 0.23),
-    grappleLight: createPlayerDot("grappleLight", 0.55, 0.21, 0.045, "glow", 0.25),
-    elbowFront: createPlayerDot("elbowFront", 0.38, 0.36, 0.05, "goldDark", 0.24),
-    frontHand: createPlayerDot("frontHand", 0.62, 0.1, 0.09, "goldLight", 0.23),
-    backHand: createPlayerDot("backHand", -0.56, 0.16, 0.08, "goldDark", 0.08),
-    hipFront: createPlayerDot("hipFront", 0.2, -0.25, 0.12, "gold", 0.19),
-    hipBack: createPlayerDot("hipBack", -0.06, -0.3, 0.1, "goldDark", 0.08),
-    kneeFront: createPlayerDot("kneeFront", 0.45, -0.62, 0.1, "goldLight", 0.21),
-    kneeBack: createPlayerDot("kneeBack", -0.36, -0.68, 0.09, "goldDark", 0.08),
-    footFront: createPlayerDot("footFront", 0.63, -0.98, 0.11, "goldLight", 0.21),
-    footBack: createPlayerDot("footBack", -0.42, -1.02, 0.09, "goldDark", 0.08),
-  },
-  lines: {
-    scarfTop: createPlayerLine("scarfTop", playerPalette.red, 0.96, 12),
-    scarfBottom: createPlayerLine("scarfBottom", playerPalette.redDark, 0.92, 12),
-    scarfTopShadow: createPlayerLine("scarfTopShadow", 0x220706, 0.72, 12),
-    scarfBottomShadow: createPlayerLine("scarfBottomShadow", 0x220706, 0.64, 12),
-    ribA: createPlayerLine("ribA", playerPalette.red, 0.86),
-    ribB: createPlayerLine("ribB", playerPalette.redDark, 0.78),
-  },
+const ribbonLines = {
+  top: createRibbonLine("ribbonTop", 0xff3b24, 0.96, 12),
+  bottom: createRibbonLine("ribbonBottom", 0x8f1410, 0.92, 12),
+  topShadow: createRibbonLine("ribbonTopShadow", 0x220706, 0.72, 12),
+  bottomShadow: createRibbonLine("ribbonBottomShadow", 0x220706, 0.64, 12),
 };
-
-const svgPuppet = {
-  loaded: false,
-  rigData: null,
-  parts: {},
-  group: new THREE.Group(),
-  autoFitScale: 1,
-  wristLocal: new THREE.Vector3(),
-};
-svgPuppet.group.name = "svgPuppet";
-svgPuppet.group.visible = false;
-playerBody.add(svgPuppet.group);
-for (const line of [
-  playerRig.lines.scarfTop,
-  playerRig.lines.scarfBottom,
-  playerRig.lines.scarfTopShadow,
-  playerRig.lines.scarfBottomShadow,
-]) {
-  playerBody.remove(line);
-  playerRibbonLayer.add(line);
-  line.renderOrder = 54;
-}
-
-const svgLayerOrder = [
-  "leftFoot",
-  "leftUpperLeg",
-  "leftLowerLeg",
-  "leftUpperArm",
-  "leftLowerArm",
-  "torsoUpper",
-  "torsoLower",
-  "head",
-  "rightUpperLeg",
-  "rightLowerLeg",
-  "rightFoot",
-  "rightUpperArm",
-  "rightLowerArm",
-  "rightHand",
-];
-
-function getSvgLayerRenderOrder(name) {
-  const order = svgPuppet.rigData?.layerOrder?.length ? svgPuppet.rigData.layerOrder : svgLayerOrder;
-  const index = order.indexOf(name);
-  return 32 + (index >= 0 ? index : order.length);
-}
-
-const svgPartDefinitions = {
-  head: { file: "head.svg", height: 0.56, pivot: "joint-neck", z: 0.52 },
-  rightUpperArm: { file: "arm_upper.svg", jointA: "joint-shoulder", jointB: "joint-elbow", jointSpan: 0.4, pivot: "joint-shoulder", z: 0.5 },
-  rightLowerArm: { file: "arm_lower.svg", jointA: "joint-elbow", jointB: "joint-wrist", jointSpan: 0.38, pivot: "joint-elbow", z: 0.49 },
-  rightHand: { file: "hand.svg", height: 0.18, pivot: "joint-wrist", z: 0.48 },
-  rightUpperLeg: { file: "leg_upper.svg", jointA: "joint-groin", jointB: "joint-knee", jointSpan: 0.58, pivot: "joint-groin", z: 0.47 },
-  rightLowerLeg: { file: "leg_lower.svg", jointA: "joint-knee", jointB: "joint-ankle", jointSpan: 0.58, pivot: "joint-knee", z: 0.46 },
-  rightFoot: { file: "foot.svg", height: 0.19, pivot: "joint-foot", z: 0.45 },
-  torsoUpper: { file: "torso_upper.svg", jointA: "joint-neck", jointB: "joint-waist", jointSpan: 0.56, pivot: "joint-shoulder", z: 0.44 },
-  torsoLower: { file: "torso_lower.svg", jointA: "joint-waist", jointB: "joint-groin", jointSpan: 0.26, pivot: "joint-waist", z: 0.43 },
-  leftUpperArm: { file: "arm_upper.svg", jointA: "joint-shoulder", jointB: "joint-elbow", jointSpan: 0.42, pivot: "joint-shoulder", z: 0.42 },
-  leftLowerArm: { file: "arm_lower_grapple.svg", jointA: "joint-elbow", jointB: "joint-wrist", jointSpan: 0.4, pivot: "joint-elbow", z: 0.41 },
-  leftHand: { file: "hand.svg", height: 0.2, pivot: "joint-wrist", z: 0.4 },
-  leftUpperLeg: { file: "leg_upper.svg", jointA: "joint-groin", jointB: "joint-knee", jointSpan: 0.62, pivot: "joint-groin", z: 0.39 },
-  leftLowerLeg: { file: "leg_lower.svg", jointA: "joint-knee", jointB: "joint-ankle", jointSpan: 0.58, pivot: "joint-knee", z: 0.38 },
-  leftFoot: { file: "foot.svg", height: 0.2, pivot: "joint-foot", z: 0.37 },
-};
-
-// Local playerBody units. Tune these instead of redrawing SVG art for first-pass alignment.
-const svgAttachmentAdjustments = {
-  head: { x: 0.02, y: 0.03, scale: 0.84 },
-  torsoUpper: { x: 0.01, y: 0, scaleX: 0.78, scaleY: 0.9 },
-  torsoLower: { x: 0.01, y: 0.02, scaleX: 0.82, scaleY: 0.86 },
-  leftUpperArm: { x: 0, y: 0, scale: 0.72 },
-  leftLowerArm: { x: 0, y: 0, scale: 0.72 },
-  rightUpperArm: { x: 0, y: -0.01, scale: 0.72 },
-  rightLowerArm: { x: 0, y: -0.01, scale: 0.72 },
-  rightHand: { x: 0, y: -0.01, scale: 0.68 },
-  leftUpperLeg: { x: 0, y: 0.01, scale: 0.72 },
-  leftLowerLeg: { x: 0, y: 0, scale: 0.7 },
-  leftFoot: { x: 0, y: -0.01, scale: 0.66 },
-  rightUpperLeg: { x: 0, y: 0.01, scale: 0.7 },
-  rightLowerLeg: { x: 0, y: 0, scale: 0.68 },
-  rightFoot: { x: 0, y: -0.01, scale: 0.64 },
-};
-
-const svgRibbonAnchorAdjustment = {
-  x: -0.02,
-  y: 0.03,
-  spacingX: 0.02,
-  spacingY: -0.04,
-};
-
-function parseSvgViewBox(svgText) {
-  const doc = new DOMParser().parseFromString(svgText, "image/svg+xml");
-  const viewBox = (doc.documentElement.getAttribute("viewBox") || "0 0 1 1")
-    .trim()
-    .split(/\s+/)
-    .map(Number);
-  const styleText = doc.querySelector("style")?.textContent || "";
-  const greenClasses = new Set(
-    Array.from(styleText.matchAll(/\.([a-zA-Z0-9_-]+)\s*\{[^}]*fill:\s*#5eff00/gi))
-      .map((match) => match[1]),
-  );
-  const blueClasses = new Set(
-    Array.from(styleText.matchAll(/\.([a-zA-Z0-9_-]+)\s*\{[^}]*fill:\s*(aqua|#00ffff|rgb\(0,\s*255,\s*255\))/gi))
-      .map((match) => match[1]),
-  );
-  const isMarkerCircle = (circle) => {
-    const fill = (circle.getAttribute("fill") || "").toLowerCase().replace(/\s+/g, "");
-    const className = circle.getAttribute("class") || "";
-    return fill === "#5eff00" || fill === "aqua" || fill === "#00ffff" || fill === "rgb(0,255,255)" || greenClasses.has(className) || blueClasses.has(className);
-  };
-  const joints = Array.from(doc.querySelectorAll("circle"))
-    .filter((circle) => {
-      const fill = (circle.getAttribute("fill") || "").toLowerCase();
-      const className = circle.getAttribute("class") || "";
-      return fill === "#5eff00" || greenClasses.has(className);
-    })
-    .map((circle, index) => ({
-      id: circle.id || `joint-${index + 1}`,
-      x: Number(circle.getAttribute("cx") || 0),
-      y: Number(circle.getAttribute("cy") || 0),
-    }));
-  const jointsById = Object.fromEntries(joints.filter((joint) => joint.id).map((joint) => [joint.id, joint]));
-  const ribbonAnchors = Array.from(doc.querySelectorAll("circle"))
-    .filter((circle) => {
-      const fill = (circle.getAttribute("fill") || "").toLowerCase().replace(/\s+/g, "");
-      const className = circle.getAttribute("class") || "";
-      return fill === "aqua" || fill === "#00ffff" || fill === "rgb(0,255,255)" || blueClasses.has(className);
-    })
-    .map((circle, index) => ({
-      id: circle.id || `ribbon-anchor-${index + 1}`,
-      x: Number(circle.getAttribute("cx") || 0),
-      y: Number(circle.getAttribute("cy") || 0),
-    }));
-  const ribbonAnchorsById = Object.fromEntries(
-    ribbonAnchors.filter((anchor) => anchor.id).map((anchor) => [anchor.id, anchor]),
-  );
-  return { doc, viewBox, joints, jointsById, ribbonAnchors, ribbonAnchorsById, isMarkerCircle };
-}
-
-function stripSvgJointMarkers(doc, isMarkerCircle) {
-  for (const circle of Array.from(doc.querySelectorAll("circle"))) {
-    if (isMarkerCircle(circle)) circle.remove();
-  }
-  return new XMLSerializer().serializeToString(doc.documentElement);
-}
-
-function chooseSvgPivot(joints, viewBox, mode, jointsById = {}) {
-  if (!joints.length) {
-    return { x: viewBox[2] * 0.5, y: viewBox[3] * 0.5 };
-  }
-  if (jointsById[mode]) return jointsById[mode];
-  const sortedByY = [...joints].sort((a, b) => a.y - b.y);
-  if (mode === "lowest") return sortedByY[sortedByY.length - 1];
-  if (mode === "middle") return sortedByY[Math.floor(sortedByY.length * 0.5)];
-  return sortedByY[0];
-}
-
-function getSvgJointSpan(joints, viewBox) {
-  if (joints.length < 2) return Math.max(viewBox[3], 1);
-  const sortedByY = [...joints].sort((a, b) => a.y - b.y);
-  const top = sortedByY[0];
-  const bottom = sortedByY[sortedByY.length - 1];
-  return Math.max(Math.hypot(bottom.x - top.x, bottom.y - top.y), 1);
-}
-
-function getSvgDefinitionJointSpan(definition, jointsById, viewBox) {
-  const start = jointsById[definition.jointA];
-  const end = jointsById[definition.jointB];
-  if (!start || !end) return Math.max(viewBox[3], 1);
-  return Math.max(Math.hypot(end.x - start.x, end.y - start.y), 1);
-}
-
-function svgTextToImage(svgText) {
-  return new Promise((resolve, reject) => {
-    const blob = new Blob([svgText], { type: "image/svg+xml" });
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = (error) => {
-      URL.revokeObjectURL(url);
-      reject(error);
-    };
-    img.src = url;
-  });
-}
-
-function imageToCanvasTexture(image) {
-  const textureCanvas = document.createElement("canvas");
-  textureCanvas.width = Math.max(1, image.naturalWidth || image.width || 1);
-  textureCanvas.height = Math.max(1, image.naturalHeight || image.height || 1);
-  const ctx = textureCanvas.getContext("2d");
-  ctx.clearRect(0, 0, textureCanvas.width, textureCanvas.height);
-  ctx.drawImage(image, 0, 0, textureCanvas.width, textureCanvas.height);
-  const texture = new THREE.CanvasTexture(textureCanvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.magFilter = THREE.LinearFilter;
-  texture.minFilter = THREE.LinearFilter;
-  texture.generateMipmaps = false;
-  return texture;
-}
-
-async function loadSvgPuppetPart(name, definition) {
-  const url = `./svg/${definition.file}`;
-  const svgText = await fetch(url).then((response) => response.text());
-  const { doc, viewBox, joints, jointsById, ribbonAnchors, ribbonAnchorsById, isMarkerCircle } = parseSvgViewBox(svgText);
-  const image = await svgTextToImage(stripSvgJointMarkers(doc, isMarkerCircle));
-  const [, , viewWidth = image.naturalWidth || 1, viewHeight = image.naturalHeight || 1] = viewBox;
-  const unitsPerPixel = config.svgCharacterUseRigData
-    ? 1
-    : definition.jointSpan
-    ? definition.jointSpan / getSvgDefinitionJointSpan(definition, jointsById, viewBox)
-    : definition.height
-    ? definition.height / viewHeight
-    : definition.width / viewWidth;
-  const width = viewWidth * unitsPerPixel;
-  const height = viewHeight * unitsPerPixel;
-  const pivot = chooseSvgPivot(joints, viewBox, definition.pivot, jointsById);
-  const jointSpan = getSvgJointSpan(joints, viewBox) * unitsPerPixel;
-  const texture = imageToCanvasTexture(image);
-  const material = new THREE.MeshBasicMaterial({
-    map: texture,
-    transparent: true,
-    depthTest: false,
-    depthWrite: false,
-  });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
-  const shadowMaterial = new THREE.MeshBasicMaterial({
-    map: texture,
-    color: 0x070a0c,
-    transparent: true,
-    opacity: 0.34,
-    depthTest: false,
-    depthWrite: false,
-  });
-  const shadowMesh = new THREE.Mesh(mesh.geometry, shadowMaterial);
-  mesh.position.set(
-    width * 0.5 - pivot.x * unitsPerPixel,
-    pivot.y * unitsPerPixel - height * 0.5,
-    definition.z,
-  );
-  shadowMesh.position.set(mesh.position.x - 12 * unitsPerPixel, mesh.position.y - 6 * unitsPerPixel, definition.z - 0.012);
-  mesh.renderOrder = getSvgLayerRenderOrder(name);
-  shadowMesh.renderOrder = getSvgLayerRenderOrder(name) - 0.5;
-  mesh.frustumCulled = false;
-  shadowMesh.frustumCulled = false;
-  const group = new THREE.Group();
-  group.name = `svg-${name}`;
-  group.renderOrder = getSvgLayerRenderOrder(name);
-  group.frustumCulled = false;
-  group.add(shadowMesh, mesh);
-  svgPuppet.group.add(group);
-  return { name, group, mesh, shadowMesh, width, height, jointSpan, unitsPerPixel, viewBox, joints, jointsById, ribbonAnchors, ribbonAnchorsById, definition };
-}
-
-function setPlaceholderCharacterVisible(visible) {
-  for (const dot of Object.values(playerRig.dots)) dot.visible = visible;
-  for (const limb of Object.values(playerLimbs)) limb.visible = visible;
-  playerRig.lines.ribA.visible = visible;
-  playerRig.lines.ribB.visible = visible;
-}
-
-function shouldShowPlaceholderCharacter() {
-  if (config.useGlbCharacter && glbCharacter.loaded) return false;
-  if (config.debugGlbNeutralOnly) return false;
-  if (config.useSvgCharacter) return false;
-  if (config.svgCharacterOverlay && config.hidePlaceholderWithSvgOverlay && svgPuppet.loaded) return false;
-  return true;
-}
-
-async function loadSvgRigData() {
-  try {
-    const response = await fetch("./data/m-rig.json", { cache: "no-store" });
-    if (!response.ok) return null;
-    return await response.json();
-  } catch (error) {
-    console.warn("SVG rig data failed to load; using procedural SVG placement.", error);
-    return null;
-  }
-}
-
-async function loadSvgPuppet() {
-  try {
-    svgPuppet.rigData = await loadSvgRigData();
-    const entries = await Promise.all(
-      Object.entries(svgPartDefinitions).map(async ([name, definition]) => [
-        name,
-        await loadSvgPuppetPart(name, definition),
-      ]),
-    );
-    svgPuppet.parts = Object.fromEntries(entries);
-    svgPuppet.loaded = true;
-    svgPuppet.group.visible = config.useSvgCharacter || config.svgCharacterOverlay;
-    setPlaceholderCharacterVisible(shouldShowPlaceholderCharacter());
-  } catch (error) {
-    console.warn("SVG puppet failed to load; keeping placeholder character.", error);
-    svgPuppet.loaded = false;
-    svgPuppet.group.visible = false;
-    setPlaceholderCharacterVisible(true);
-  }
-}
-
-function placeSvgPart(part, x, y, rotation = 0, scaleX = 1, scaleY = 1) {
-  if (!part) return;
-  part.group.position.set(x, y, 0);
-  part.group.rotation.z = rotation;
-  part.group.scale.set(scaleX, scaleY, 1);
-}
-
-function getRigPartSecondaryMotion(name, now) {
-  const partName = name.toLowerCase();
-  const idle = !state.hasLaunched || state.grounded || state.paused;
-  const speed = Math.hypot(state.velocity.x, state.velocity.y);
-  const swingAmount = THREE.MathUtils.clamp(speed / 22, 0, 1);
-  const breath = Math.sin(now * 3.1);
-  const flutter = Math.sin(now * 5.2 + name.length * 0.73);
-  const motion = { x: 0, y: 0, rotation: 0, scale: 1 };
-
-  if (name === "torsoUpper" || name === "torsoLower") {
-    motion.y = breath * (idle ? 0.035 : 0.018);
-    motion.rotation = breath * (idle ? 1.6 : 0.8);
-    return motion;
-  }
-  if (name === "head") {
-    motion.x = breath * 0.018;
-    motion.y = breath * 0.024;
-    motion.rotation = breath * 2.2 + (state.grappled ? -state.velocity.x * 0.08 : 0);
-    return motion;
-  }
-  if (partName.includes("right") && (partName.includes("arm") || partName.includes("hand"))) {
-    motion.rotation = flutter * (idle ? 2.8 : 4.5 * swingAmount);
-    motion.y = flutter * 0.012;
-    return motion;
-  }
-  if (partName.includes("leg") || partName.includes("foot")) {
-    motion.rotation = flutter * (idle ? 1.4 : 3.2 * swingAmount);
-    motion.x = flutter * 0.01;
-    return motion;
-  }
-  if (name === "leftUpperArm" || name === "leftLowerArm" || name === "leftHand") {
-    motion.rotation = state.grappled || state.hookActive ? 0 : flutter * 1.2;
-  }
-  return motion;
-}
-
-function applySvgAttachmentAdjustment(part) {
-  const adjustment = svgAttachmentAdjustments[part?.name];
-  if (!adjustment) return;
-  part.group.position.x += adjustment.x ?? 0;
-  part.group.position.y += adjustment.y ?? 0;
-  part.group.rotation.z += adjustment.rotation ?? 0;
-  part.group.scale.x *= adjustment.scaleX ?? adjustment.scale ?? 1;
-  part.group.scale.y *= adjustment.scaleY ?? adjustment.scale ?? 1;
-}
-
-function placeSvgPartFromRigData(part, values, now = performance.now() / 1000) {
-  if (!part || !values) return;
-  const rigScale = config.svgRigScale * characterSettings.scale;
-  const motion = getRigPartSecondaryMotion(part.name, now);
-  part.group.visible = true;
-  part.group.position.set(values.x * rigScale + motion.x, -values.y * rigScale + motion.y, 0);
-  part.group.rotation.z = -THREE.MathUtils.degToRad((values.rotation || 0) + motion.rotation);
-  const partScale = (values.scale || 1) * rigScale * motion.scale;
-  part.group.scale.set(partScale, partScale, 1);
-}
-
-function getSvgRigPose() {
-  const rig = svgPuppet.rigData;
-  if (!rig) return null;
-  const swingPoseName = rig.baselinePose || "m_mid_swing";
-  const swingPose = rig.animations?.[swingPoseName];
-  const shouldUseSwingPose = state.hookActive || state.grappled || state.playerAnimation === "midSwing";
-  if (shouldUseSwingPose && swingPose) return swingPose;
-  return rig.parts || swingPose || null;
-}
-
-function alignSvgRigToWrist() {
-  const lowerArm = svgPuppet.parts.leftLowerArm;
-  if (!lowerArm) return;
-  const wrist = getSvgPartJointRigPoint(lowerArm, "joint-wrist", svgScratchA);
-  const target = playerRig.dots.grappleLight.position;
-  svgPuppet.group.position.set(
-    target.x - wrist.x * svgPuppet.group.scale.x,
-    target.y - wrist.y * svgPuppet.group.scale.y,
-    0,
-  );
-}
-
-function normalizeSvgRigHeight() {
-  const height = getObjectLocalHeight(svgPuppet.group);
-  if (height <= 0) {
-    svgPuppet.group.scale.setScalar(1);
-    return;
-  }
-  const desiredScale = THREE.MathUtils.clamp(config.svgRigTargetHeight / height, 0.45, 1.8);
-  svgPuppet.group.scale.setScalar(desiredScale);
-}
-
-function getSvgRigWristLocal(target = svgPuppet.wristLocal) {
-  const poseName = svgPuppet.rigData?.baselinePose || "m_mid_swing";
-  const pose = svgPuppet.rigData?.animations?.[poseName] || svgPuppet.rigData?.parts;
-  const wristValues = pose?.leftLowerArm;
-  if (!wristValues) return target.set(0, 0, 0);
-  const rigScale = config.svgRigScale * characterSettings.scale;
-  return target.set(wristValues.x * rigScale, -wristValues.y * rigScale, 0);
-}
-
-function getSvgSwingRotation() {
-  if (!state.grappled || !state.anchor) return 0;
-  const target = getVisualGrapplePoint(state.anchor, scratchRopeEnd);
-  const rope = scratchVelocityDirection.subVectors(target, state.player);
-  if (rope.lengthSq() <= 0.0001) return 0;
-  const ropeAngle = Math.atan2(rope.y, rope.x);
-  return THREE.MathUtils.clamp(ropeAngle - Math.PI * 0.5, -config.svgSwingRotationMax, config.svgSwingRotationMax);
-}
-
-function applySvgPuppetDetachedTransform() {
-  const parentScaleX = Math.abs(playerBody.scale.x) || 1;
-  const parentScaleY = Math.abs(playerBody.scale.y) || 1;
-  svgPuppet.group.scale.set(
-    svgPuppet.autoFitScale / parentScaleX,
-    svgPuppet.autoFitScale / parentScaleY,
-    1,
-  );
-  const wrist = getSvgRigWristLocal(svgPuppet.wristLocal);
-  const rotation = getSvgSwingRotation();
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
-  const pivotX = wrist.x * svgPuppet.group.scale.x;
-  const pivotY = wrist.y * svgPuppet.group.scale.y;
-  svgPuppet.group.position.set(
-    pivotX - (pivotX * cos - pivotY * sin),
-    pivotY - (pivotX * sin + pivotY * cos),
-    0,
-  );
-  svgPuppet.group.rotation.set(0, 0, rotation - playerMesh.rotation.z);
-}
-
-function updateSvgPuppetFromRigData() {
-  const pose = getSvgRigPose();
-  if (!pose) return false;
-  const now = performance.now() / 1000;
-  svgPuppet.group.position.set(0, 0, 0);
-  svgPuppet.group.rotation.set(0, 0, 0);
-  svgPuppet.group.scale.setScalar(1);
-  for (const [key, values] of Object.entries(pose)) {
-    placeSvgPartFromRigData(svgPuppet.parts[key], values, now);
-  }
-  normalizeSvgRigHeight();
-  alignSvgRigToWrist();
-  return true;
-}
-
-function getObjectLocalHeight(object, targetBox = new THREE.Box3()) {
-  targetBox.makeEmpty();
-  object.updateWorldMatrix(true, true);
-  targetBox.setFromObject(object);
-  if (targetBox.isEmpty()) return 0;
-  return targetBox.max.y - targetBox.min.y;
-}
-
-function getPlaceholderHeight() {
-  const box = new THREE.Box3();
-  const merged = new THREE.Box3();
-  const objects = [
-    ...Object.values(playerRig.dots),
-    ...Object.values(playerLimbs),
-  ].filter((object) => object.visible);
-  for (const object of objects) {
-    box.setFromObject(object);
-    if (!box.isEmpty()) merged.union(box);
-  }
-  if (merged.isEmpty()) return 0;
-  return merged.max.y - merged.min.y;
-}
-
-function updateSvgOverlayAutoFit() {
-  if (!config.svgOverlayAutoFit || !svgPuppet.loaded || !svgPuppet.group.visible) return;
-  const placeholderHeight = getPlaceholderHeight();
-  const svgHeight = getObjectLocalHeight(svgPuppet.group);
-  if (placeholderHeight <= 0 || svgHeight <= 0) return;
-  const desiredScale = THREE.MathUtils.clamp(
-    svgPuppet.autoFitScale * (placeholderHeight * config.svgOverlayTargetHeightScale) / svgHeight,
-    0.08,
-    1.25,
-  );
-  svgPuppet.autoFitScale = THREE.MathUtils.lerp(svgPuppet.autoFitScale, desiredScale, 0.35);
-}
-
-function placeSvgSegment(part, start, end, widthScale = 1, rotationOffset = Math.PI / 2) {
-  if (!part) return;
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const length = Math.max(Math.hypot(dx, dy), 0.001);
-  placeSvgPart(
-    part,
-    start.x,
-    start.y,
-    Math.atan2(dy, dx) + rotationOffset,
-    widthScale,
-    length / Math.max(part.jointSpan, 0.001),
-  );
-}
-
-function getSvgMarkerLocalPoint(part, marker, target = new THREE.Vector3()) {
-  if (!part || !marker) return target.set(0, 0, 0);
-  const pivot = chooseSvgPivot(part.joints, part.viewBox, part.definition.pivot, part.jointsById);
-  return target.set(
-    (marker.x - pivot.x) * part.unitsPerPixel,
-    (pivot.y - marker.y) * part.unitsPerPixel,
-    0,
-  );
-}
-
-const svgScratchA = new THREE.Vector3();
-const svgScratchB = new THREE.Vector3();
-const svgScratchC = new THREE.Vector3();
-const svgScratchD = new THREE.Vector3();
-
-function getSvgSortedJoints(part) {
-  return part?.joints ? [...part.joints].sort((a, b) => a.y - b.y) : [];
-}
-
-function getSvgJoint(part, role = "top") {
-  const namedJoint = part?.jointsById?.[role] ?? part?.jointsById?.[`joint-${role}`];
-  if (namedJoint) return namedJoint;
-  const joints = getSvgSortedJoints(part);
-  if (!joints.length) return null;
-  if (role === "bottom") return joints[joints.length - 1];
-  if (role === "middle") return joints[Math.floor(joints.length * 0.5)];
-  return joints[0];
-}
-
-function getSvgJointLocalPoint(part, role = "top", target = new THREE.Vector3()) {
-  return getSvgMarkerLocalPoint(part, getSvgJoint(part, role), target);
-}
-
-function placeSvgPartByJoint(part, role, target, rotation = 0, scale = 1) {
-  if (!part || !target) return;
-  const local = getSvgJointLocalPoint(part, role, svgScratchA);
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
-  const offsetX = (local.x * cos - local.y * sin) * scale;
-  const offsetY = (local.x * sin + local.y * cos) * scale;
-  placeSvgPart(part, target.x - offsetX, target.y - offsetY, rotation, scale, scale);
-  applySvgAttachmentAdjustment(part);
-}
-
-function getSvgPartJointWorld(part, role, target = new THREE.Vector3()) {
-  if (!part) return target.set(0, 0, 0);
-  getSvgJointLocalPoint(part, role, target);
-  part.group.updateWorldMatrix(true, false);
-  part.group.localToWorld(target);
-  return target;
-}
-
-function getSvgPartJointRigPoint(part, role, target = new THREE.Vector3()) {
-  if (!part) return target.set(0, 0, 0);
-  getSvgJointLocalPoint(part, role, target);
-  part.group.updateMatrix();
-  target.applyMatrix4(part.group.matrix);
-  return target;
-}
-
-function placeSvgSegmentByStartAndAngle(part, start, angle, scale = 1) {
-  if (!part || !start) return;
-  const startJoint = part.definition.jointA || "top";
-  const endJoint = part.definition.jointB || "bottom";
-  const startLocal = getSvgJointLocalPoint(part, startJoint, svgScratchA);
-  const endLocal = getSvgJointLocalPoint(part, endJoint, svgScratchB);
-  const nativeAngle = Math.atan2(endLocal.y - startLocal.y, endLocal.x - startLocal.x);
-  placeSvgPartByJoint(part, startJoint, start, angle - nativeAngle, scale);
-}
-
-function segmentAngle(start, end) {
-  return Math.atan2(end.y - start.y, end.x - start.x);
-}
-
-function getSvgRibbonWorldAnchor(index, target) {
-  const head = svgPuppet.parts.head;
-  const marker = head?.ribbonAnchors?.[0];
-  if ((!config.useSvgCharacter && !config.svgCharacterOverlay) || !svgPuppet.loaded || !head || !marker) return null;
-  getSvgMarkerLocalPoint(head, marker, target);
-  target.x += svgRibbonAnchorAdjustment.x - index * svgRibbonAnchorAdjustment.spacingX * state.facing;
-  target.y += svgRibbonAnchorAdjustment.y + index * svgRibbonAnchorAdjustment.spacingY;
-  head.group.localToWorld(target);
-  return target;
-}
 
 function getGlbRibbonWorldAnchor(index, target) {
   if (!glbCharacter.loaded || !glbCharacter.ribbonAnchor) return null;
   glbCharacter.ribbonAnchor.getWorldPosition(target);
-  target.x += (index === 0 ? -0.024 : 0.024) * state.facing;
-  target.y -= index * 0.038;
+  target.x += (index === 0 ? -0.03 : 0.03) * state.facing;
+  target.y -= index * 0.046;
   target.z = state.player.z;
   return target;
-}
-
-function getSvgSkeletonPose() {
-  const pose = {
-    torsoShoulder: new THREE.Vector3(0.0, 0.58, 0),
-    torsoLower: new THREE.Vector3(0.22, -0.16, 0),
-    neck: new THREE.Vector3(-0.12, 1.02, 0),
-    head: new THREE.Vector3(-0.14, 1.04, 0),
-    frontShoulder: new THREE.Vector3(0.18, 0.6, 0),
-    frontElbow: new THREE.Vector3(0.54, 0.48, 0),
-    frontWrist: new THREE.Vector3(0.94, 0.5, 0),
-    backShoulder: new THREE.Vector3(-0.03, 0.54, 0),
-    backElbow: new THREE.Vector3(0.17, 0.24, 0),
-    backWrist: new THREE.Vector3(0.42, 0.1, 0),
-    frontHip: new THREE.Vector3(0.15, -0.38, 0),
-    frontKnee: new THREE.Vector3(0.1, -1.12, 0),
-    frontAnkle: new THREE.Vector3(0.15, -1.82, 0),
-    backHip: new THREE.Vector3(-0.05, -0.4, 0),
-    backKnee: new THREE.Vector3(-0.14, -1.06, 0),
-    backAnkle: new THREE.Vector3(-0.1, -1.76, 0),
-  };
-
-  if (state.flourishSpinRemaining > 0) {
-    const progress = 1 - state.flourishSpinRemaining / config.flourishSpinDuration;
-    const tuck = Math.sin(progress * Math.PI);
-    pose.frontElbow.set(0.32, 0.25 + tuck * 0.28, 0);
-    pose.frontWrist.set(0.46, 0.05 + tuck * 0.34, 0);
-    pose.backElbow.set(-0.16, 0.22 + tuck * 0.25, 0);
-    pose.backWrist.set(-0.28, 0.02 + tuck * 0.3, 0);
-    pose.frontKnee.set(0.24, -0.68 + tuck * 0.5, 0);
-    pose.frontAnkle.set(0.42, -0.96 + tuck * 0.46, 0);
-    pose.backKnee.set(-0.22, -0.7 + tuck * 0.5, 0);
-    pose.backAnkle.set(-0.36, -0.98 + tuck * 0.42, 0);
-    return pose;
-  }
-
-  if (state.hookActive && (state.anchor || state.hookEnd)) {
-    const ropeTarget = state.grappled && state.anchor ? getVisualGrapplePoint(state.anchor, scratchRopeEnd) : state.hookEnd;
-    const ropeDirection = scratchVelocityDirection.subVectors(ropeTarget, state.player).normalize();
-    const localRopeX = ropeDirection.x * state.facing;
-    const localRopeY = ropeDirection.y;
-    pose.frontElbow.set(
-      pose.frontShoulder.x + localRopeX * 0.38,
-      pose.frontShoulder.y + localRopeY * 0.38,
-      0,
-    );
-    pose.frontWrist.set(
-      pose.frontShoulder.x + localRopeX * 0.82,
-      pose.frontShoulder.y + localRopeY * 0.82,
-      0,
-    );
-    const upswing = THREE.MathUtils.clamp(state.velocity.y / 12, -0.7, 0.7);
-    pose.frontKnee.x += 0.16 + upswing * 0.28;
-    pose.frontAnkle.x += 0.2 + upswing * 0.36;
-    pose.backKnee.x -= 0.14 - upswing * 0.18;
-    pose.backAnkle.x -= 0.18 - upswing * 0.24;
-    return pose;
-  }
-
-  if (state.hasLaunched && !state.grounded && !state.gameOver && !state.finished) {
-    const glide = THREE.MathUtils.clamp(state.velocity.x * state.facing / 18, -0.25, 0.45);
-    const fall = THREE.MathUtils.clamp(-state.velocity.y / 18, -0.2, 0.5);
-    pose.frontElbow.x += 0.14 + glide * 0.18;
-    pose.frontWrist.x += 0.2 + glide * 0.24;
-    pose.backElbow.x -= 0.14;
-    pose.backWrist.x -= 0.18;
-    pose.frontKnee.x += 0.18 + glide * 0.12;
-    pose.frontAnkle.x += 0.2 + glide * 0.16;
-    pose.frontAnkle.y += fall * 0.2;
-    pose.backKnee.x -= 0.12;
-    pose.backAnkle.x -= 0.18;
-    pose.backAnkle.y += fall * 0.18;
-  }
-
-  return pose;
-}
-
-function getPlaceholderSkeletonPose() {
-  const pose = {
-    torsoShoulder: new THREE.Vector3(),
-    torsoLower: playerRig.dots.waist.position.clone(),
-    neck: playerRig.dots.helmet.position.clone().add(new THREE.Vector3(-0.03, -0.1, 0)),
-    head: playerRig.dots.helmet.position.clone(),
-    frontShoulder: new THREE.Vector3(),
-    frontElbow: new THREE.Vector3(),
-    frontWrist: new THREE.Vector3(),
-    backShoulder: new THREE.Vector3(),
-    backElbow: new THREE.Vector3(),
-    backWrist: new THREE.Vector3(),
-    frontHip: new THREE.Vector3(),
-    frontKnee: new THREE.Vector3(),
-    frontAnkle: new THREE.Vector3(),
-    backHip: new THREE.Vector3(),
-    backKnee: new THREE.Vector3(),
-    backAnkle: new THREE.Vector3(),
-  };
-
-  getLimbJointPoints(playerLimbs.frontArm, pose.frontShoulder, pose.frontElbow, pose.frontWrist);
-  getLimbJointPoints(playerLimbs.backArm, pose.backShoulder, pose.backElbow, pose.backWrist);
-  getLimbJointPoints(playerLimbs.frontLeg, pose.frontHip, pose.frontKnee, pose.frontAnkle);
-  getLimbJointPoints(playerLimbs.backLeg, pose.backHip, pose.backKnee, pose.backAnkle);
-  pose.torsoShoulder.lerpVectors(pose.backShoulder, pose.frontShoulder, 0.58);
-  pose.torsoLower.lerpVectors(pose.backHip, pose.frontHip, 0.52);
-  pose.neck.copy(pose.torsoShoulder).add(new THREE.Vector3(-0.08, 0.34, 0));
-  pose.head.copy(pose.neck).add(new THREE.Vector3(-0.02, 0.16, 0));
-  return pose;
-}
-
-function updateSvgPuppetRig() {
-  if ((!config.useSvgCharacter && !config.svgCharacterOverlay) || !svgPuppet.loaded) return;
-  if (config.svgCharacterUseRigData && updateSvgPuppetFromRigData()) return;
-
-  const parts = svgPuppet.parts;
-  if (parts.leftHand) parts.leftHand.group.visible = false;
-  const pose = getPlaceholderSkeletonPose();
-  const torsoScale = characterSettings.torso;
-  const limbScale = characterSettings.limbs;
-  const shoulder = pose.torsoShoulder.clone();
-
-  placeSvgPartByJoint(parts.torsoUpper, "joint-shoulder", shoulder, -0.03, torsoScale);
-  placeSvgPartByJoint(parts.torsoLower, "joint-waist", pose.torsoLower, 0.04, torsoScale);
-  placeSvgPartByJoint(parts.head, "joint-neck", pose.neck, -0.08, characterSettings.head);
-
-  const rightShoulder = pose.backShoulder;
-  const leftShoulder = pose.frontShoulder;
-  const rightHip = pose.backHip;
-  const leftHip = pose.frontHip;
-
-  placeSvgSegmentByStartAndAngle(parts.rightUpperArm, rightShoulder, segmentAngle(pose.backShoulder, pose.backElbow), limbScale);
-  const rightElbow = getSvgPartJointRigPoint(parts.rightUpperArm, "joint-elbow", new THREE.Vector3());
-  placeSvgSegmentByStartAndAngle(parts.rightLowerArm, rightElbow, segmentAngle(pose.backElbow, pose.backWrist), limbScale);
-  placeSvgPartByJoint(parts.rightHand, "joint-wrist", pose.backWrist, segmentAngle(pose.backElbow, pose.backWrist), limbScale);
-
-  placeSvgSegmentByStartAndAngle(parts.leftUpperArm, leftShoulder, segmentAngle(pose.frontShoulder, pose.frontElbow), limbScale);
-  const leftElbow = getSvgPartJointRigPoint(parts.leftUpperArm, "joint-elbow", new THREE.Vector3());
-  placeSvgSegmentByStartAndAngle(parts.leftLowerArm, leftElbow, segmentAngle(pose.frontElbow, pose.frontWrist), limbScale);
-
-  placeSvgSegmentByStartAndAngle(parts.rightUpperLeg, rightHip, segmentAngle(pose.backHip, pose.backKnee), limbScale);
-  const rightKnee = getSvgPartJointRigPoint(parts.rightUpperLeg, "joint-knee", new THREE.Vector3());
-  placeSvgSegmentByStartAndAngle(parts.rightLowerLeg, rightKnee, segmentAngle(pose.backKnee, pose.backAnkle), limbScale);
-  placeSvgPartByJoint(parts.rightFoot, "joint-foot", pose.backAnkle, segmentAngle(pose.backKnee, pose.backAnkle), limbScale);
-
-  placeSvgSegmentByStartAndAngle(parts.leftUpperLeg, leftHip, segmentAngle(pose.frontHip, pose.frontKnee), limbScale);
-  const leftKnee = getSvgPartJointRigPoint(parts.leftUpperLeg, "joint-knee", new THREE.Vector3());
-  placeSvgSegmentByStartAndAngle(parts.leftLowerLeg, leftKnee, segmentAngle(pose.frontKnee, pose.frontAnkle), limbScale);
-  placeSvgPartByJoint(parts.leftFoot, "joint-foot", pose.frontAnkle, segmentAngle(pose.frontKnee, pose.frontAnkle), limbScale);
 }
 
 const ribbonPhysics = [
@@ -2691,65 +1794,12 @@ function resetRibbonPhysics() {
     for (let index = 0; index < ribbon.points.length; index += 1) {
       const point = ribbon.points[index].set(
         state.player.x - 0.26 * state.facing,
-        state.player.y + 0.9 - ribbonIndex * 0.08 - index * ribbon.segmentLength * characterSettings.ribbon,
+        state.player.y + 0.9 - ribbonIndex * 0.08 - index * ribbon.segmentLength * ribbonLengthScale,
         0,
       );
       ribbon.previous[index].copy(point);
     }
   }
-}
-
-function applyCharacterSettings() {
-  playerBody.scale.set(
-    state.facing * characterSettings.scale,
-    characterSettings.scale,
-    1,
-  );
-  syncGlbCharacterTransform();
-  syncCharacterSourceVisibility();
-}
-
-function syncCharacterControls() {
-  if (!characterScaleInput) return;
-  characterScaleInput.value = String(characterSettings.scale);
-  characterTorsoInput.value = String(characterSettings.torso);
-  characterHeadInput.value = String(characterSettings.head);
-  characterLimbsInput.value = String(characterSettings.limbs);
-  characterRibbonInput.value = String(characterSettings.ribbon);
-}
-
-function saveCharacterSettings() {
-  localStorage.setItem(characterSettingsStorageKey, JSON.stringify(characterSettings));
-}
-
-function loadCharacterSettings() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(characterSettingsStorageKey));
-    if (!stored || typeof stored !== "object") return;
-    for (const key of Object.keys(defaultCharacterSettings)) {
-      if (Number.isFinite(stored[key])) characterSettings[key] = stored[key];
-    }
-  } catch {
-    localStorage.removeItem(characterSettingsStorageKey);
-  }
-}
-
-function updateCharacterSetting(key, value) {
-  characterSettings[key] = Number(value);
-  saveCharacterSettings();
-  syncCharacterControls();
-  applyCharacterSettings();
-  resetRibbonPhysics();
-  syncEditorPane();
-}
-
-function resetCharacterSettings() {
-  Object.assign(characterSettings, defaultCharacterSettings);
-  saveCharacterSettings();
-  syncCharacterControls();
-  applyCharacterSettings();
-  resetRibbonPhysics();
-  syncEditorPane();
 }
 
 function syncPixelateControls() {
@@ -2773,11 +1823,6 @@ function syncEditorPane() {
   editorUi.zoom = Math.round(camera.position.z);
   editorUi.pixelate = pixelateSettings.enabled;
   editorUi.pixelateIntensity = pixelateSettings.intensity;
-  editorUi.characterScale = characterSettings.scale;
-  editorUi.characterTorso = characterSettings.torso;
-  editorUi.characterHead = characterSettings.head;
-  editorUi.characterLimbs = characterSettings.limbs;
-  editorUi.characterRibbon = characterSettings.ribbon;
 
   syncingEditorPane = true;
   for (const binding of tweakPaneBindings) binding.refresh?.();
@@ -2871,50 +1916,6 @@ async function initializeEditorPane() {
     { label: "Intensity", min: 0, max: 1, step: 0.01 },
     (value) => setPixelateIntensity(value),
   );
-
-  const characterFolder = tweakPane.addFolder({ title: "Character" });
-  addTweakBinding(
-    characterFolder,
-    editorUi,
-    "characterScale",
-    { label: "Scale", min: 0.72, max: 1.35, step: 0.01 },
-    (value) => updateCharacterSetting("scale", value),
-  );
-  addTweakBinding(
-    characterFolder,
-    editorUi,
-    "characterTorso",
-    { label: "Torso", min: 0.82, max: 1.28, step: 0.01 },
-    (value) => updateCharacterSetting("torso", value),
-  );
-  addTweakBinding(
-    characterFolder,
-    editorUi,
-    "characterHead",
-    { label: "Head", min: 0.78, max: 1.24, step: 0.01 },
-    (value) => updateCharacterSetting("head", value),
-  );
-  addTweakBinding(
-    characterFolder,
-    editorUi,
-    "characterLimbs",
-    { label: "Limbs", min: 0.82, max: 1.24, step: 0.01 },
-    (value) => updateCharacterSetting("limbs", value),
-  );
-  addTweakBinding(
-    characterFolder,
-    editorUi,
-    "characterRibbon",
-    { label: "Ribbon", min: 0.55, max: 1.35, step: 0.01 },
-    (value) => updateCharacterSetting("ribbon", value),
-  );
-  characterFolder.addButton({ title: "Reset character" }).on("click", () => {
-    resetCharacterSettings();
-    syncEditorPane();
-  });
-  characterFolder.addButton({ title: "Open rig editor" }).on("click", () => {
-    window.location.href = "./character-rig.html";
-  });
 
   syncEditorPane();
   setPaused(state.paused);
@@ -4605,6 +3606,7 @@ function reset({ resetLevelStats = false } = {}) {
     state.crashExploding = false;
     state.crashExplosionStartedAt = -100;
     state.facing = 1;
+    playerPoseRotationSmoothed = 0;
     resetRibbonPhysics();
     resetJeremyFireworks();
     levelCompletePanel.classList.add("hidden");
@@ -4690,7 +3692,6 @@ function decorateControls() {
     [zoomInButton, "", "plus"],
     [zoomFitButton, "Birds eye", "scan-eye"],
     [pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line"],
-    [characterEditorResetButton, "Reset character", "undo-2"],
     [resetAnchorsButton, "Reset layout", "map"],
   ];
 
@@ -4806,7 +3807,8 @@ function distanceFromSegmentToPoint(start, end, point) {
 function startCrashExplosion(now) {
   state.crashExploding = true;
   state.crashExplosionStartedAt = now;
-  playerBody.visible = false;
+  playerAssetRoot.visible = false;
+  playerRibbonLayer.visible = false;
 
   for (let index = 0; index < crashPieces.length; index += 1) {
     const piece = crashPieces[index];
@@ -5505,13 +4507,7 @@ function getRopeOrigin(target = scratchRopeStart) {
     target.z = state.player.z;
     return target;
   }
-  if ((config.useSvgCharacter || config.svgCharacterOverlay) && svgPuppet.loaded && svgPuppet.parts.leftLowerArm) {
-    svgPuppet.group.updateWorldMatrix(true, true);
-    getSvgPartJointWorld(svgPuppet.parts.leftLowerArm, "joint-wrist", target);
-    target.z = state.player.z;
-    return target;
-  }
-  playerRig.dots.grappleLight.getWorldPosition(target);
+  target.copy(state.player);
   target.z = state.player.z;
   return target;
 }
@@ -5567,15 +4563,15 @@ function spawnPhysicsSpark(position, velocity, {
 }
 
 function spawnAnchorPlasmaSpark(anchor, now) {
-  const center = getVisualGrapplePoint(anchor, playerRigScratchA);
+  const center = getVisualGrapplePoint(anchor, characterScratchA);
   const angle = now * 7.5 + Math.random() * Math.PI * 2;
   const radius = 0.42 + Math.random() * 0.28;
-  const position = playerRigScratchB.set(
+  const position = characterScratchB.set(
     center.x + Math.cos(angle) * radius,
     center.y + Math.sin(angle) * radius,
     0.48,
   );
-  const tangent = playerRigScratchC.set(-Math.sin(angle), Math.cos(angle), 0);
+  const tangent = characterScratchC.set(-Math.sin(angle), Math.cos(angle), 0);
   const outward = scratchPerpDirection.set(Math.cos(angle), Math.sin(angle), 0);
   const velocity = new THREE.Vector3()
     .copy(tangent)
@@ -5594,12 +4590,12 @@ function spawnAnchorPlasmaSpark(anchor, now) {
 function spawnDroneMalfunctionSpark(anchor, now) {
   if (!anchor || anchor.visualType !== "drone") return;
   const side = anchor.malfunctionSide || 1;
-  const position = playerRigScratchA.set(
+  const position = characterScratchA.set(
     anchor.mesh.position.x + side * (0.62 + Math.random() * 0.18),
     anchor.mesh.position.y + (Math.random() - 0.5) * 0.34,
     0.5,
   );
-  const velocity = playerRigScratchB.set(
+  const velocity = characterScratchB.set(
     side * (1.4 + Math.random() * 2.6),
     0.8 + Math.random() * 2.6,
     0,
@@ -5901,78 +4897,13 @@ function updateHud(now) {
   }
 }
 
-function setLimbLine(limb, startX, startY, endX, endY, bend = 0.12) {
-  const positions = limb.geometry.attributes.position;
-  const dx = endX - startX;
-  const dy = endY - startY;
-  const length = Math.max(Math.hypot(dx, dy), 0.001);
-  const elbowX = startX + dx * 0.52 - (dy / length) * bend;
-  const elbowY = startY + dy * 0.52 + (dx / length) * bend;
-  positions.setXYZ(0, startX, startY, 0.08);
-  positions.setXYZ(1, elbowX, elbowY, 0.08);
-  positions.setXYZ(2, endX, endY, 0.08);
-  positions.needsUpdate = true;
-}
+const characterScratchA = new THREE.Vector3();
+const characterScratchB = new THREE.Vector3();
+const characterScratchC = new THREE.Vector3();
 
-function getLimbPoint(limb, pointIndex, target) {
-  const positions = limb.geometry.attributes.position;
-  const index = pointIndex === 1 && positions.count > 2 ? 2 : pointIndex;
-  target.set(positions.getX(index), positions.getY(index), positions.getZ(index));
-  return target;
-}
-
-function getLimbJointPoints(limb, start, bend, end) {
-  const positions = limb.geometry.attributes.position;
-  start.set(positions.getX(0), positions.getY(0), positions.getZ(0));
-  bend.set(positions.getX(1), positions.getY(1), positions.getZ(1));
-  const endIndex = Math.min(2, positions.count - 1);
-  end.set(positions.getX(endIndex), positions.getY(endIndex), positions.getZ(endIndex));
-}
-
-const playerRigScratchA = new THREE.Vector3();
-const playerRigScratchB = new THREE.Vector3();
-const playerRigScratchC = new THREE.Vector3();
-
-function placeDotBetween(dot, start, end, amount, offsetX = 0, offsetY = 0) {
-  dot.position.lerpVectors(start, end, amount);
-  dot.position.x += offsetX;
-  dot.position.y += offsetY;
-}
-
-function placePlate(plate, x, y, rotation = 0, width = null, height = null) {
-  if (!plate) return;
-  plate.position.set(x, y, plate.position.z);
-  plate.rotation.z = rotation;
-  if (width !== null && height !== null) plate.scale.set(width, height, 1);
-}
-
-function placeRing(ring, x, y, radius, rotation = 0) {
-  if (!ring) return;
-  ring.position.set(x, y, ring.position.z);
-  ring.rotation.z = rotation;
-  ring.scale.set(radius, radius, 1);
-}
-
-function placePlateBetween(plate, start, end, width, lengthScale = 0.72, offset = 0) {
-  if (!plate) return;
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const length = Math.max(Math.hypot(dx, dy) * lengthScale, 0.001);
-  const normalX = -dy / Math.max(Math.hypot(dx, dy), 0.001);
-  const normalY = dx / Math.max(Math.hypot(dx, dy), 0.001);
-  placePlate(
-    plate,
-    (start.x + end.x) * 0.5 + normalX * offset,
-    (start.y + end.y) * 0.5 + normalY * offset,
-    Math.atan2(dy, dx) - Math.PI / 2,
-    width,
-    length,
-  );
-}
-
-function localBodyPointToWorld(x, y, rotation = 0, target = playerRigScratchC) {
-  const scaledX = x * state.facing * characterSettings.scale;
-  const scaledY = y * characterSettings.scale;
+function localBodyPointToWorld(x, y, rotation = 0, target = characterScratchC) {
+  const scaledX = x * state.facing * characterVisualScale;
+  const scaledY = y * characterVisualScale;
   const cos = Math.cos(rotation);
   const sin = Math.sin(rotation);
   target.set(
@@ -5991,19 +4922,14 @@ function worldPointToLocalBody(point, rotation = 0) {
   const unrotatedX = relX * cos - relY * sin;
   const unrotatedY = relX * sin + relY * cos;
   return [
-    unrotatedX / (state.facing * characterSettings.scale),
-    unrotatedY / characterSettings.scale,
+    unrotatedX / (state.facing * characterVisualScale),
+    unrotatedY / characterVisualScale,
   ];
 }
 
 function updatePlayerRibbonPhysics(now, dt, flourishFlip = 0) {
   if (config.debugGlbNeutralOnly) {
-    for (const line of [
-      playerRig.lines.scarfTop,
-      playerRig.lines.scarfBottom,
-      playerRig.lines.scarfTopShadow,
-      playerRig.lines.scarfBottomShadow,
-    ]) {
+    for (const line of Object.values(ribbonLines)) {
       line.visible = false;
     }
     return;
@@ -6023,13 +4949,12 @@ function updatePlayerRibbonPhysics(now, dt, flourishFlip = 0) {
   ];
   const worldAnchors = localAnchors.map(([x, y], index) => (
     getGlbRibbonWorldAnchor(index, new THREE.Vector3())
-      ?? getSvgRibbonWorldAnchor(index, new THREE.Vector3())
       ?? localBodyPointToWorld(x, y, flourishFlip, new THREE.Vector3())
   ));
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
   const stationaryRibbon = idleHang && speed < 0.08 && state.flourishSpinRemaining <= 0;
   for (const [ribbonIndex, ribbon] of ribbonPhysics.entries()) {
-    const segmentLength = ribbon.segmentLength * characterSettings.ribbon;
+    const segmentLength = ribbon.segmentLength * ribbonLengthScale;
     ribbon.points[0].copy(worldAnchors[ribbonIndex]);
     ribbon.previous[0].copy(worldAnchors[ribbonIndex]);
     if (stationaryRibbon) {
@@ -6083,288 +5008,11 @@ function updatePlayerRibbonPhysics(now, dt, flourishFlip = 0) {
   const topRibbon = ribbonPhysics[0].points.map((point) => worldPointToLocalBody(point, flourishFlip));
   const bottomRibbon = ribbonPhysics[1].points.map((point) => worldPointToLocalBody(point, flourishFlip));
   const shadowOffset = 0.035;
-  setRibbonLine(playerRig.lines.scarfTopShadow, topRibbon.map(([x, y]) => [x + shadowOffset, y - shadowOffset]), 0.08);
-  setRibbonLine(playerRig.lines.scarfBottomShadow, bottomRibbon.map(([x, y]) => [x + shadowOffset, y - shadowOffset]), 0.08);
-  setRibbonLine(playerRig.lines.scarfTop, topRibbon, 0.18);
-  setRibbonLine(playerRig.lines.scarfBottom, bottomRibbon, 0.17);
-  playerRig.lines.scarfTop.visible = true;
-  playerRig.lines.scarfBottom.visible = true;
-  playerRig.lines.scarfTopShadow.visible = true;
-  playerRig.lines.scarfBottomShadow.visible = true;
-}
-
-function updateProceduralPlayerRig(now, dt, flourishFlip = 0) {
-  const idleBreath = state.playerAnimation === "idleHang" ? Math.sin(now * 3.2) : 0;
-  const quickPulse = Math.sin(now * 5.6);
-  const breathY = idleBreath * 0.035;
-  const breathX = idleBreath * 0.012;
-  const torsoScale = characterSettings.torso;
-  const headScale = characterSettings.head;
-
-  placePlate(playerRig.plates.torsoCore, 0.0 - breathX * 0.2, 0.19 + breathY * 0.35, -0.04, 0.22 * torsoScale, 0.72 * torsoScale);
-  placePlate(playerRig.plates.chestArmor, 0.12 + breathX, 0.53 + breathY, -0.36, 0.38 * torsoScale, 0.28 * torsoScale);
-  placePlate(playerRig.plates.chestShell, 0.13 + breathX, 0.49 + breathY, -0.18, 0.8 * torsoScale, 0.82 * torsoScale);
-  placePlate(playerRig.plates.chestCoreInset, 0.02 + breathX * 0.35, 0.25 + breathY * 0.6, -0.08, 0.72 * torsoScale, 0.82 * torsoScale);
-  placePlate(playerRig.plates.chestWing, 0.22 + breathX, 0.43 + breathY, -0.44, 0.2 * torsoScale, 0.22 * torsoScale);
-  placePlate(playerRig.plates.abdomenPlate, 0.03 - breathX * 0.3, 0.13 + breathY * 0.2, -0.05, 0.18 * torsoScale, 0.32 * torsoScale);
-  placePlate(playerRig.plates.pelvisArmor, 0.06 - breathX * 0.1, -0.18 + breathY * 0.1, -0.24, 0.28 * torsoScale, 0.15 * torsoScale);
-  placePlate(playerRig.plates.neckStack, -0.12 + breathX * 0.25, 0.75 + breathY * 0.65, -0.04, 0.12 * headScale, 0.46 * headScale);
-  placePlate(playerRig.plates.neckFront, -0.06 + breathX * 0.25, 0.75 + breathY * 0.65, -0.06, 0.07 * headScale, 0.36 * headScale);
-  placePlate(playerRig.plates.helmetShell, -0.04 + breathX * 0.35, 1.02 + breathY * 0.68, -0.08, 1.02 * headScale, 0.98 * headScale);
-  placePlate(playerRig.plates.helmetMask, -0.005 + breathX * 0.35, 0.95 + breathY * 0.68, -0.18, 0.86 * headScale, 0.92 * headScale);
-  placePlate(playerRig.plates.helmetBackPlate, -0.09 + breathX * 0.25, 1.04 + breathY * 0.68, -0.14, 0.24 * headScale, 0.22 * headScale);
-  placePlate(playerRig.plates.helmetBeak, 0.11 + breathX * 0.25, 1.12 + breathY * 0.68, 0.24, 0.24 * headScale, 0.065 * headScale);
-  placePlate(playerRig.plates.helmetJaw, 0.13 + breathX * 0.25, 0.88 + breathY * 0.68, -0.56, 0.16 * headScale, 0.07 * headScale);
-
-  playerRig.dots.torsoShadow.position.set(-0.03 - breathX, 0.08 + breathY * 0.45, 0.09);
-  playerRig.dots.torsoShadow.scale.set((0.23 + idleBreath * 0.01) * torsoScale, (0.46 - idleBreath * 0.01) * torsoScale, 1);
-  playerRig.dots.torsoGold.position.set(0.09 + breathX, 0.55 + breathY, 0.14);
-  playerRig.dots.torsoGold.scale.set((0.18 + idleBreath * 0.01) * torsoScale, (0.18 - idleBreath * 0.01) * torsoScale, 1);
-  playerRig.dots.chestPlate.position.set(0.12 + breathX * 1.4, 0.53 + breathY * 1.2, 0.16);
-  playerRig.dots.chestPlate.scale.set(0.1 * torsoScale, 0.1 * torsoScale, 1);
-  playerRig.dots.waist.position.set(0.03 - breathX * 0.4, -0.2 + breathY * 0.15, 0.15);
-  playerRig.dots.waist.scale.set(0.13 * torsoScale, 0.13 * torsoScale, 1);
-
-  playerRig.dots.helmet.position.set(-0.04 + breathX * 0.35, 1.02 + breathY * 0.68, 0.2);
-  playerRig.dots.helmet.scale.set(0.26 * headScale, 0.3 * headScale, 1);
-  playerRig.dots.helmetBack.position.set(-0.18 + breathX * 0.2, 0.96 + breathY * 0.6, 0.17);
-  playerRig.dots.helmetBack.scale.set(0.17 * headScale, 0.24 * headScale, 1);
-  playerRig.dots.visor.position.set(0.14 + breathX * 0.25, 0.99 + breathY * 0.68, 0.22);
-  playerRig.dots.visor.scale.set(0.11 * headScale, 0.055 * headScale, 1);
-  playerRig.dots.helmetShine.position.set(-0.16 + breathX * 0.25, 1.16 + breathY * 0.68, 0.24);
-  playerRig.dots.helmetShine.scale.set(0.05 * headScale, 0.075 * headScale, 1);
-  playerRig.dots.eyeGlow.position.set(0.14 + breathX * 0.25, 1.0 + breathY * 0.68, 0.25);
-  playerRig.dots.eyeGlow.scale.set(0.08 * headScale, 0.08 * headScale, 1);
-  playerRig.dots.eyeCore.position.set(0.14 + breathX * 0.25, 1.0 + breathY * 0.68, 0.26);
-  playerRig.dots.eyeCore.scale.set(0.045 * headScale, 0.045 * headScale, 1);
-  placeRing(playerRig.rings.eye, 0.14 + breathX * 0.25, 1.0 + breathY * 0.68, 0.105 * headScale);
-  playerRig.dots.scarfKnot.position.set(-0.24 + breathX, 0.86 + breathY * 0.8, 0.22);
-
-  const ribbonTimeScale = isSlowMotionActive() ? config.slowMotionForwardScale : 1;
-  const ribbonDt = Math.min(dt * ribbonTimeScale, 0.033);
-  const idleHang = !state.hasLaunched || state.grounded || state.playerAnimation === "idleHang";
-  const flourishTuck = state.flourishSpinRemaining > 0
-    ? Math.sin((1 - state.flourishSpinRemaining / config.flourishSpinDuration) * Math.PI)
-    : 0;
-  const localAnchors = [
-    [-0.3, 0.92 + breathY],
-    [-0.25, 0.84 + breathY],
-  ];
-  const worldAnchors = localAnchors.map(([x, y], index) => (
-    getGlbRibbonWorldAnchor(index, new THREE.Vector3())
-      ?? getSvgRibbonWorldAnchor(index, new THREE.Vector3())
-      ?? localBodyPointToWorld(x, y, flourishFlip, new THREE.Vector3())
-  ));
-  const speed = Math.hypot(state.velocity.x, state.velocity.y);
-  const stationaryRibbon = idleHang && speed < 0.08 && state.flourishSpinRemaining <= 0;
-  for (const [ribbonIndex, ribbon] of ribbonPhysics.entries()) {
-    const segmentLength = ribbon.segmentLength * characterSettings.ribbon;
-    ribbon.points[0].copy(worldAnchors[ribbonIndex]);
-    ribbon.previous[0].copy(worldAnchors[ribbonIndex]);
-    if (stationaryRibbon) {
-      for (let index = 1; index < ribbon.points.length; index += 1) {
-        const point = ribbon.points[index].set(
-          worldAnchors[ribbonIndex].x + (ribbonIndex === 0 ? -0.04 : 0.04) * state.facing,
-          worldAnchors[ribbonIndex].y - segmentLength * index,
-          0,
-        );
-        ribbon.previous[index].copy(point);
-      }
-      continue;
-    }
-
-    for (let index = 1; index < ribbon.points.length; index += 1) {
-      const amount = index / (ribbon.points.length - 1);
-      const point = ribbon.points[index];
-      const previous = ribbon.previous[index];
-      const velocityX = (point.x - previous.x) * 0.92;
-      const velocityY = (point.y - previous.y) * 0.92;
-      previous.copy(point);
-      const motionAmount = THREE.MathUtils.clamp(speed / 18, 0, 1);
-      const wind = Math.sin(now * (6.2 + ribbonIndex * 0.8) + index * 0.86) * config.ribbonWind * amount * motionAmount;
-      const flutter = Math.sin(now * (11.5 + ribbonIndex) + index * 1.35) * 0.018 * amount * motionAmount;
-      const flipCurl = Math.sin(amount * Math.PI * 1.7 + ribbonIndex * 0.9 + now * 5.4) * flourishTuck * 0.045;
-      point.x += velocityX + (wind + flutter + flipCurl) * state.facing * ribbonDt * 60;
-      point.y += velocityY + (config.gravity * 0.006 * amount + (idleHang ? -0.025 : 0.012)) * ribbonDt;
-    }
-
-    for (let pass = 0; pass < 8; pass += 1) {
-      ribbon.points[0].copy(worldAnchors[ribbonIndex]);
-      for (let index = 1; index < ribbon.points.length; index += 1) {
-        const prev = ribbon.points[index - 1];
-        const point = ribbon.points[index];
-        const dx = point.x - prev.x;
-        const dy = point.y - prev.y;
-        const distance = Math.max(Math.hypot(dx, dy), 0.0001);
-        const difference = (distance - segmentLength) / distance;
-        if (index === 1) {
-          point.x -= dx * difference;
-          point.y -= dy * difference;
-        } else {
-          prev.x += dx * difference * 0.5;
-          prev.y += dy * difference * 0.5;
-          point.x -= dx * difference * 0.5;
-          point.y -= dy * difference * 0.5;
-        }
-      }
-    }
-  }
-  const topRibbon = ribbonPhysics[0].points.map((point) => worldPointToLocalBody(point, flourishFlip));
-  const bottomRibbon = ribbonPhysics[1].points.map((point) => worldPointToLocalBody(point, flourishFlip));
-  const shadowOffset = 0.035;
-  setRibbonLine(playerRig.lines.scarfTopShadow, topRibbon.map(([x, y]) => [x + shadowOffset, y - shadowOffset]), 0.08);
-  setRibbonLine(playerRig.lines.scarfBottomShadow, bottomRibbon.map(([x, y]) => [x + shadowOffset, y - shadowOffset]), 0.08);
-  setRibbonLine(playerRig.lines.scarfTop, topRibbon, 0.18);
-  setRibbonLine(playerRig.lines.scarfBottom, bottomRibbon, 0.17);
-  playerRig.lines.scarfTop.visible = true;
-  playerRig.lines.scarfBottom.visible = true;
-  playerRig.lines.scarfTopShadow.visible = true;
-  playerRig.lines.scarfBottomShadow.visible = true;
-
-  setPlayerLine(playerRig.lines.ribA, -0.1, 0.27 + breathY * 0.6, 0.26, 0.2 + breathY * 0.2, 0.11);
-  setPlayerLine(playerRig.lines.ribB, -0.09, 0.15 + breathY * 0.4, 0.24, 0.1 - breathY * 0.1, 0.11);
-
-  const frontArmStart = getLimbPoint(playerLimbs.frontArm, 0, playerRigScratchA);
-  const frontArmEnd = getLimbPoint(playerLimbs.frontArm, 1, playerRigScratchB);
-  const frontArmElbow = new THREE.Vector3();
-  getLimbJointPoints(playerLimbs.frontArm, frontArmStart, frontArmElbow, frontArmEnd);
-  placePlateBetween(playerRig.plates.leftUpperArm, frontArmStart, frontArmElbow, 0.11 * characterSettings.limbs, 0.76, 0.005);
-  placePlate(playerRig.plates.leftShoulderShell, frontArmStart.x + 0.035, frontArmStart.y + 0.02, -0.18, 0.72 * characterSettings.limbs, 0.72 * characterSettings.limbs);
-  placePlateBetween(playerRig.plates.leftLowerArm, frontArmElbow, frontArmEnd, 0.1 * characterSettings.limbs, 0.82, -0.005);
-  placePlateBetween(playerRig.plates.leftForearmDecalA, frontArmElbow, frontArmEnd, 0.025 * characterSettings.limbs, 0.22, -0.055);
-  placePlateBetween(playerRig.plates.leftForearmDecalB, frontArmElbow, frontArmEnd, 0.025 * characterSettings.limbs, 0.22, 0.045);
-  playerRig.dots.shoulderFront.position.set(frontArmStart.x + 0.02, frontArmStart.y + 0.02, 0.2);
-  playerRig.dots.shoulderFront.scale.set(0.11 * characterSettings.limbs, 0.11 * characterSettings.limbs, 1);
-  placeRing(playerRig.rings.shoulderFront, frontArmStart.x + 0.02, frontArmStart.y + 0.02, 0.12 * characterSettings.limbs);
-  placeDotBetween(playerRig.dots.elbowFront, frontArmStart, frontArmEnd, 0.5, 0.01, 0.01);
-  playerRig.dots.elbowFront.scale.set(0.055 * characterSettings.limbs, 0.055 * characterSettings.limbs, 1);
-  placeRing(playerRig.rings.elbowFront, frontArmElbow.x, frontArmElbow.y, 0.085 * characterSettings.limbs);
-  placeDotBetween(playerRig.dots.forearmGrapple, frontArmStart, frontArmEnd, 0.72, 0.025, -0.015);
-  playerRig.dots.forearmGrapple.scale.set(0.085 * characterSettings.limbs, 0.085 * characterSettings.limbs, 1);
-  placeDotBetween(playerRig.dots.grappleLight, frontArmStart, frontArmEnd, 0.75, 0.08, 0.01);
-  playerRig.dots.frontHand.position.set(frontArmEnd.x, frontArmEnd.y, 0.23);
-  playerRig.dots.frontHand.scale.set(0.065 * characterSettings.limbs, 0.065 * characterSettings.limbs, 1);
-  placePlate(playerRig.plates.frontFingerA, frontArmEnd.x + 0.035, frontArmEnd.y - 0.06, -0.08, 0.024 * characterSettings.limbs, 0.12 * characterSettings.limbs);
-  placePlate(playerRig.plates.frontFingerB, frontArmEnd.x + 0.08, frontArmEnd.y - 0.055, -0.18, 0.022 * characterSettings.limbs, 0.1 * characterSettings.limbs);
-
-  const backArmStart = getLimbPoint(playerLimbs.backArm, 0, playerRigScratchA);
-  const backArmEnd = getLimbPoint(playerLimbs.backArm, 1, playerRigScratchB);
-  const backArmElbow = new THREE.Vector3();
-  getLimbJointPoints(playerLimbs.backArm, backArmStart, backArmElbow, backArmEnd);
-  placePlateBetween(playerRig.plates.rightUpperArm, backArmStart, backArmElbow, 0.09 * characterSettings.limbs, 0.74, -0.005);
-  placePlateBetween(playerRig.plates.rightLowerArm, backArmElbow, backArmEnd, 0.08 * characterSettings.limbs, 0.78, 0.004);
-  playerRig.dots.shoulderBack.position.set(backArmStart.x - 0.02, backArmStart.y, 0.11);
-  playerRig.dots.shoulderBack.scale.set(0.1 * characterSettings.limbs, 0.1 * characterSettings.limbs, 1);
-  placeRing(playerRig.rings.shoulderBack, backArmStart.x - 0.02, backArmStart.y, 0.095 * characterSettings.limbs);
-  playerRig.dots.backHand.position.set(backArmEnd.x, backArmEnd.y, 0.08);
-  playerRig.dots.backHand.scale.set(0.06 * characterSettings.limbs, 0.06 * characterSettings.limbs, 1);
-  placePlate(playerRig.plates.backFingerA, backArmEnd.x + 0.035, backArmEnd.y - 0.05, -0.12, 0.02 * characterSettings.limbs, 0.1 * characterSettings.limbs);
-
-  const frontLegStart = getLimbPoint(playerLimbs.frontLeg, 0, playerRigScratchA);
-  const frontLegEnd = getLimbPoint(playerLimbs.frontLeg, 1, playerRigScratchB);
-  const frontLegKnee = new THREE.Vector3();
-  getLimbJointPoints(playerLimbs.frontLeg, frontLegStart, frontLegKnee, frontLegEnd);
-  placePlate(playerRig.plates.leftHipShell, frontLegStart.x + 0.03, frontLegStart.y - 0.03, -0.16, 0.84 * characterSettings.limbs, 0.8 * characterSettings.limbs);
-  placePlateBetween(playerRig.plates.leftUpperLeg, frontLegStart, frontLegKnee, 0.14 * characterSettings.limbs, 0.82, 0.006);
-  placePlateBetween(playerRig.plates.leftLowerLeg, frontLegKnee, frontLegEnd, 0.1 * characterSettings.limbs, 0.82, -0.006);
-  placePlateBetween(playerRig.plates.leftThighDecalA, frontLegStart, frontLegKnee, 0.032 * characterSettings.limbs, 0.2, -0.06);
-  placePlateBetween(playerRig.plates.leftThighDecalB, frontLegStart, frontLegKnee, 0.032 * characterSettings.limbs, 0.2, 0.05);
-  playerRig.dots.hipFront.position.set(frontLegStart.x + 0.04, frontLegStart.y - 0.08, 0.19);
-  playerRig.dots.hipFront.scale.set(0.11 * characterSettings.limbs, 0.25 * characterSettings.limbs, 1);
-  placeDotBetween(playerRig.dots.kneeFront, frontLegStart, frontLegEnd, 0.56, 0.02, 0.01);
-  playerRig.dots.kneeFront.scale.set(0.085 * characterSettings.limbs, 0.2 * characterSettings.limbs, 1);
-  placeRing(playerRig.rings.kneeFront, frontLegKnee.x, frontLegKnee.y, 0.1 * characterSettings.limbs);
-  playerRig.dots.footFront.position.set(frontLegEnd.x + 0.08, frontLegEnd.y - 0.02, 0.21);
-  playerRig.dots.footFront.scale.set(0.16 * characterSettings.limbs, 0.055 * characterSettings.limbs, 1);
-  placeRing(playerRig.rings.ankleFront, frontLegEnd.x + 0.02, frontLegEnd.y + 0.02, 0.09 * characterSettings.limbs);
-  placePlate(playerRig.plates.leftFootSole, frontLegEnd.x + 0.11, frontLegEnd.y - 0.055, 0.03, 0.28 * characterSettings.limbs, 0.055 * characterSettings.limbs);
-
-  const backLegStart = getLimbPoint(playerLimbs.backLeg, 0, playerRigScratchA);
-  const backLegEnd = getLimbPoint(playerLimbs.backLeg, 1, playerRigScratchB);
-  const backLegKnee = new THREE.Vector3();
-  getLimbJointPoints(playerLimbs.backLeg, backLegStart, backLegKnee, backLegEnd);
-  placePlateBetween(playerRig.plates.rightUpperLeg, backLegStart, backLegKnee, 0.11 * characterSettings.limbs, 0.8, -0.006);
-  placePlateBetween(playerRig.plates.rightLowerLeg, backLegKnee, backLegEnd, 0.085 * characterSettings.limbs, 0.78, 0.005);
-  playerRig.dots.hipBack.position.set(backLegStart.x - 0.03, backLegStart.y - 0.08, 0.08);
-  playerRig.dots.hipBack.scale.set(0.095 * characterSettings.limbs, 0.22 * characterSettings.limbs, 1);
-  placeDotBetween(playerRig.dots.kneeBack, backLegStart, backLegEnd, 0.56, -0.02, 0);
-  playerRig.dots.kneeBack.scale.set(0.075 * characterSettings.limbs, 0.17 * characterSettings.limbs, 1);
-  placeRing(playerRig.rings.kneeBack, backLegKnee.x, backLegKnee.y, 0.08 * characterSettings.limbs);
-  playerRig.dots.footBack.position.set(backLegEnd.x - 0.08, backLegEnd.y - 0.02, 0.08);
-  playerRig.dots.footBack.scale.set(0.13 * characterSettings.limbs, 0.05 * characterSettings.limbs, 1);
-  placePlate(playerRig.plates.rightFootSole, backLegEnd.x - 0.08, backLegEnd.y - 0.05, -0.02, 0.2 * characterSettings.limbs, 0.045 * characterSettings.limbs);
-
-  updateSvgPuppetRig();
-}
-
-function updatePlayerLimbs(now, flourishProgress) {
-  if (state.flourishSpinRemaining > 0) {
-    const tuck = Math.sin(flourishProgress * Math.PI);
-    const tightTuck = Math.pow(tuck, 0.72);
-    const reach = 1 - tuck;
-    setLimbLine(playerLimbs.backArm, -0.06, 0.62, -0.14 - tightTuck * 0.18, 0.12 + tightTuck * 0.42, -0.22);
-    setLimbLine(playerLimbs.frontArm, 0.18, 0.58, 0.28 + reach * 0.24, 0.12 + tightTuck * 0.42, 0.22);
-    setLimbLine(playerLimbs.backLeg, -0.02, -0.28, -0.12 - tightTuck * 0.22, -0.56 + tightTuck * 0.82, -0.2);
-    setLimbLine(playerLimbs.frontLeg, 0.2, -0.26, 0.28 + reach * 0.26, -0.54 + tightTuck * 0.82, 0.2);
-    return;
-  }
-
-  if (state.hookActive && (state.anchor || state.hookEnd)) {
-    const ropeTarget = state.grappled && state.anchor ? getVisualGrapplePoint(state.anchor, scratchRopeEnd) : state.hookEnd;
-    const ropeDirection = scratchVelocityDirection.subVectors(ropeTarget, state.player).normalize();
-    const localRopeX = ropeDirection.x * state.facing;
-    const localRopeY = ropeDirection.y;
-    const shoulderX = 0.14;
-    const shoulderY = 0.58;
-    const reach = 0.78;
-    const handX = shoulderX + localRopeX * reach;
-    const handY = shoulderY + localRopeY * reach;
-    setLimbLine(playerLimbs.frontArm, shoulderX, shoulderY, handX, handY, 0);
-
-    const toPlayer = scratchPerpDirection.subVectors(state.player, ropeTarget).normalize();
-    const downSwing = state.velocity.y < -0.7;
-    const upSwing = state.velocity.y > 0.7;
-    const localVelocityX = state.velocity.x * state.facing;
-    const kick = THREE.MathUtils.clamp(localVelocityX / 16, -0.7, 0.9);
-    const arcLift = THREE.MathUtils.clamp(state.velocity.y / 12, -0.75, 0.85);
-    const legBias = downSwing ? -0.38 : upSwing ? 0.52 : toPlayer.x * 0.22;
-    const backArmLift = THREE.MathUtils.clamp(-localRopeY * 0.18 + 0.12, -0.08, 0.36);
-    setLimbLine(playerLimbs.backArm, -0.05, 0.58, -0.32 - backArmLift * 0.7, 0.22 + backArmLift, -0.08);
-    setLimbLine(
-      playerLimbs.backLeg,
-      -0.02,
-      -0.28,
-      -0.28 + legBias * 0.5 - kick * 0.16,
-      -0.78 - arcLift * 0.16,
-      -0.14,
-    );
-    setLimbLine(
-      playerLimbs.frontLeg,
-      0.2,
-      -0.26,
-      0.32 + legBias * 0.72 + kick * 0.15,
-      -0.76 + arcLift * 0.22,
-      0.16,
-    );
-    return;
-  }
-
-  const airborne = state.hasLaunched && !state.grounded && !state.gameOver && !state.finished;
-  if (airborne) {
-    const fallTuck = THREE.MathUtils.clamp(-state.velocity.y / 18, -0.25, 0.55);
-    const glide = THREE.MathUtils.clamp(state.velocity.x / 18, -0.25, 0.45) * state.facing;
-    setLimbLine(playerLimbs.backArm, -0.05, 0.58, -0.34 - glide * 0.1, 0.2 + fallTuck * 0.08, -0.08);
-    setLimbLine(playerLimbs.frontArm, 0.14, 0.58, 0.42 + glide * 0.13, 0.22 + fallTuck * 0.1, 0.08);
-    setLimbLine(playerLimbs.backLeg, -0.02, -0.25, -0.28 - glide * 0.07, -0.76 + fallTuck * 0.17, -0.08);
-    setLimbLine(playerLimbs.frontLeg, 0.16, -0.24, 0.36 + glide * 0.08, -0.76 + fallTuck * 0.2, 0.08);
-    return;
-  }
-
-  const idleDrift = Math.sin(now * 2.2) * 0.04;
-  setLimbLine(playerLimbs.frontArm, 0.11, 0.56, 0.02, 0.08 + idleDrift * 0.3, -0.035);
-  setLimbLine(playerLimbs.frontLeg, 0.08, -0.22, 0.02, -0.9, 0.025);
-  setLimbLine(playerLimbs.backLeg, -0.06, -0.22, -0.08, -0.84, -0.025);
-  setLimbLine(playerLimbs.backArm, -0.04, 0.56, -0.12, 0.1 + idleDrift, -0.04);
+  setRibbonLine(ribbonLines.topShadow, topRibbon.map(([x, y]) => [x + shadowOffset, y - shadowOffset]), 0.08);
+  setRibbonLine(ribbonLines.bottomShadow, bottomRibbon.map(([x, y]) => [x + shadowOffset, y - shadowOffset]), 0.08);
+  setRibbonLine(ribbonLines.top, topRibbon, 0.18);
+  setRibbonLine(ribbonLines.bottom, bottomRibbon, 0.17);
+  for (const line of Object.values(ribbonLines)) line.visible = true;
 }
 
 function resolvePlayerAnimationState() {
@@ -6386,80 +5034,44 @@ function applyPlayerAnimation(now, flourishProgress, dt) {
   if (state.hasLaunched && !state.grappled && Math.abs(state.velocity.x) > 0.35) {
     state.facing = state.velocity.x >= 0 ? 1 : -1;
   }
-  playerBody.scale.x = state.facing * characterSettings.scale;
-  playerBody.scale.y = characterSettings.scale;
   let flourishFlip = 0;
-  let twistRotation = 0;
   let flourishTuck = 0;
   if (flourishProgress > 0) {
     flourishTuck = Math.sin(flourishProgress * Math.PI);
     const easedFlip = THREE.MathUtils.smootherstep(flourishProgress, 0, 1);
     flourishFlip = easedFlip * Math.PI * 2 * state.flourishFlipDirection;
   }
-  playerBody.rotation.z = flourishFlip;
-  syncGlbCharacterTransform(state.facing, flourishFlip);
-  if (!config.useGlbCharacter || !glbCharacter.loaded || !config.useRestRelativeGlbPose) {
-    updatePlayerLimbs(now, flourishProgress);
-  }
-  if (!config.freezeGlbCharacterPose) poseGlbCharacterFromPhysics(now);
-  if (config.useGlbCharacter && glbCharacter.loaded) {
-    updatePlayerRibbonPhysics(now, dt, flourishFlip);
-  } else {
-    updateProceduralPlayerRig(now, dt, flourishFlip);
-  }
   let poseRotation = THREE.MathUtils.clamp(-state.velocity.x * 0.035, -0.5, 0.5);
-  let squashX = 1;
-  let squashY = 1;
 
   if (state.playerAnimation === "idleHang") {
     poseRotation = -0.08 + Math.sin(now * 4) * 0.025;
   } else if (state.playerAnimation === "jumpLaunch") {
     poseRotation = -0.32;
-    squashX = 1.08;
-    squashY = 0.92;
   } else if (state.playerAnimation === "throwHook") {
     poseRotation = -0.48;
-    squashX = 1.12;
   } else if (state.playerAnimation === "downSwing") {
     poseRotation = THREE.MathUtils.clamp(-state.velocity.x * 0.03 - 0.28, -0.7, 0.2);
-    squashY = 1.08;
   } else if (state.playerAnimation === "upSwing") {
     poseRotation = THREE.MathUtils.clamp(-state.velocity.x * 0.03 + 0.22, -0.2, 0.7);
-    squashX = 1.05;
-  } else if (state.playerAnimation === "barrelRoll") {
-    squashX = 1.15;
-    squashY = 0.86;
   } else if (state.playerAnimation === "falling") {
     poseRotation = 0.35;
   }
 
   if (flourishProgress > 0) {
     poseRotation += -0.14 * state.flourishFlipDirection * flourishTuck;
-    squashX *= 0.92 - flourishTuck * 0.1;
-    squashY *= 1.04 + flourishTuck * 0.12;
   }
-  for (const line of [
-    playerRig.lines.scarfTop,
-    playerRig.lines.scarfBottom,
-    playerRig.lines.scarfTopShadow,
-    playerRig.lines.scarfBottomShadow,
-  ]) {
-    line.rotation.z = 0;
-  }
-  const glbActive = config.useGlbCharacter && glbCharacter.loaded;
-  playerMesh.rotation.z = poseRotation;
-  playerMesh.rotation.x = glbActive ? 0 : THREE.MathUtils.clamp(state.velocity.y * 0.025, -0.45, 0.45);
-  playerMesh.rotation.y = glbActive ? 0 : twistRotation;
-  if (glbActive) {
-    const pulseScale = 1 + state.flourishPulse * 0.08;
-    playerMesh.scale.set(pulseScale, pulseScale, 1);
-  } else {
-    playerMesh.scale.set(
-      (1 + state.flourishPulse * 0.22 + Math.sin(flourishProgress * Math.PI) * 0.08) * squashX,
-      (1 + state.flourishPulse * 0.22) * squashY,
-      1,
-    );
-  }
+  const rotationAlpha = 1 - Math.exp(-Math.max(dt, 0.001) * 16);
+  playerPoseRotationSmoothed = normalizeAngle(
+    playerPoseRotationSmoothed + normalizeAngle(poseRotation - playerPoseRotationSmoothed) * rotationAlpha,
+  );
+  playerMesh.rotation.z = playerPoseRotationSmoothed;
+  playerMesh.rotation.x = 0;
+  playerMesh.rotation.y = 0;
+  const pulseScale = 1 + state.flourishPulse * 0.08;
+  playerMesh.scale.set(pulseScale, pulseScale, 1);
+  syncGlbCharacterTransform(state.facing, flourishFlip);
+  if (!config.freezeGlbCharacterPose) poseGlbCharacterFromPhysics(now, dt);
+  updatePlayerRibbonPhysics(now, dt, flourishFlip);
 
 }
 
@@ -6615,26 +5227,16 @@ bindGameButton(pixelateToggleButton, () => setPixelateEnabled(!pixelateSettings.
 if (pixelateIntensityInput) {
   pixelateIntensityInput.addEventListener("input", () => setPixelateIntensity(pixelateIntensityInput.value));
 }
-if (characterScaleInput) {
-  characterScaleInput.addEventListener("input", () => updateCharacterSetting("scale", characterScaleInput.value));
-  characterTorsoInput.addEventListener("input", () => updateCharacterSetting("torso", characterTorsoInput.value));
-  characterHeadInput.addEventListener("input", () => updateCharacterSetting("head", characterHeadInput.value));
-  characterLimbsInput.addEventListener("input", () => updateCharacterSetting("limbs", characterLimbsInput.value));
-  characterRibbonInput.addEventListener("input", () => updateCharacterSetting("ribbon", characterRibbonInput.value));
-  bindGameButton(characterEditorResetButton, resetCharacterSettings);
-}
 bindGameButton(nextLevelButton, () => reset({ resetLevelStats: true }));
 
 resize();
 loadPixelateSettings();
-loadCharacterSettings();
-syncCharacterControls();
-applyCharacterSettings();
+syncGlbCharacterTransform();
+syncCharacterSourceVisibility();
 initializeEditorPane();
 decorateControls();
 window.addEventListener("load", refreshLucideIcons);
 loadGlbCharacter();
-loadSvgPuppet();
 reset();
 setPaused(false);
 requestAnimationFrame(tick);
