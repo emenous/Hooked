@@ -104,6 +104,7 @@ body {
 #hud,
 #status-center,
 #controls,
+#mute-button,
 #flourish-button,
 #editor,
 #level-complete,
@@ -477,6 +478,32 @@ kbd {
   background: #f2ff68;
 }
 
+#mute-button {
+  position: absolute;
+  right: 16px;
+  bottom: 68px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(247, 255, 248, 0.28);
+  border-radius: 8px;
+  background: rgba(5, 12, 12, 0.68);
+  color: #f7fff8;
+  cursor: pointer;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+}
+
+#mute-button:hover {
+  background: rgba(244, 255, 249, 0.14);
+}
+
+#mute-button[aria-pressed="true"] {
+  border-color: rgba(255, 92, 92, 0.56);
+  color: #ffb1a4;
+}
+
 #game-version {
   position: absolute;
   left: 50%;
@@ -715,6 +742,7 @@ kbd,
 #editor,
 #editor *,
 #restart,
+#mute-button,
 #flourish-button,
 #status-center,
 #status-center *,
@@ -863,6 +891,14 @@ kbd,
     min-height: 32px;
     border-radius: 6px;
     font-size: 12px;
+  }
+
+  #mute-button {
+    right: 8px;
+    bottom: 46px;
+    width: 34px;
+    height: 34px;
+    border-radius: 6px;
   }
 
   #game-version {

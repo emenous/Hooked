@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.61";
+const GAME_VERSION = "v0.5.62";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -20,6 +20,7 @@ const centerSlowMoTimeEl = document.querySelector("#center-slomo-time");
 const multiplierPillEl = document.querySelector("#multiplier-pill");
 const multiplierCountEl = document.querySelector("#multiplier-count");
 const restartButton = document.querySelector("#restart");
+const muteButton = document.querySelector("#mute-button");
 const flourishButton = document.querySelector("#flourish-button");
 const resetAnchorsButton = document.querySelector("#reset-anchors");
 const togglePauseButton = document.querySelector("#toggle-pause");
@@ -203,8 +204,12 @@ const config = {
   stableGrappleSocketDrift: 0.08,
   useRestRelativeGlbPose: true,
   glbPoseSmoothing: 18,
-  pixelateEnabled: false,
-  pixelateIntensity: 0.45,
+  characterRimColor: 0xffd21f,
+  characterRimIntensity: 1.45,
+  characterRimPower: 1.55,
+  characterRimLightDirection: new THREE.Vector3(0.58, 0.78, 0.24).normalize(),
+  pixelateEnabled: true,
+  pixelateIntensity: 0.59,
   pixelateMaxBlockSize: 34,
   pixelateReferenceZoom: 18,
   pixelateZoomScalePower: 1.15,
@@ -215,7 +220,7 @@ const config = {
 const characterVisualScale = 1;
 const ribbonLengthScale = 0.95;
 
-const pixelateSettingsStorageKey = "hooked.pixelate.settings.v1";
+const pixelateSettingsStorageKey = "hooked.pixelate.settings.v2";
 const pixelateSettings = {
   enabled: config.pixelateEnabled,
   intensity: config.pixelateIntensity,
@@ -370,6 +375,7 @@ const sfx = (() => {
     musicVolume: 0.38,
     sfxMuted: false,
     musicMuted: false,
+    masterMuted: false,
   };
   if (!AudioContextCtor) {
     return {
@@ -381,6 +387,7 @@ const sfx = (() => {
       setMusicVolume(value) { settings.musicVolume = THREE.MathUtils.clamp(Number(value), 0, 1); },
       setSfxMuted(value) { settings.sfxMuted = Boolean(value); },
       setMusicMuted(value) { settings.musicMuted = Boolean(value); },
+      setMasterMuted(value) { settings.masterMuted = Boolean(value); },
     };
   }
 
@@ -423,8 +430,9 @@ const sfx = (() => {
   function applyVolumes() {
     if (!ctx || !sfxBus || !musicBus) return;
     const now = ctx.currentTime;
-    sfxBus.gain.setTargetAtTime(settings.sfxMuted ? 0 : settings.sfxVolume * 0.28, now, 0.02);
-    musicBus.gain.setTargetAtTime(settings.musicMuted ? 0 : settings.musicVolume * 0.22, now, 0.08);
+    const masterScale = settings.masterMuted ? 0 : 1;
+    sfxBus.gain.setTargetAtTime(settings.sfxMuted ? 0 : settings.sfxVolume * 0.28 * masterScale, now, 0.02);
+    musicBus.gain.setTargetAtTime(settings.musicMuted ? 0 : settings.musicVolume * 0.22 * masterScale, now, 0.08);
   }
 
   function saveSettings() {
@@ -439,6 +447,7 @@ const sfx = (() => {
       if (Number.isFinite(stored.musicVolume)) settings.musicVolume = THREE.MathUtils.clamp(stored.musicVolume, 0, 1);
       if (typeof stored.sfxMuted === "boolean") settings.sfxMuted = stored.sfxMuted;
       if (typeof stored.musicMuted === "boolean") settings.musicMuted = stored.musicMuted;
+      if (typeof stored.masterMuted === "boolean") settings.masterMuted = stored.masterMuted;
     } catch {
       localStorage.removeItem(storageKey);
     } finally {
@@ -710,6 +719,12 @@ const sfx = (() => {
       applyVolumes();
       if (!settings.musicMuted) startMusic();
     },
+    setMasterMuted(value) {
+      settings.masterMuted = Boolean(value);
+      saveSettings();
+      applyVolumes();
+      if (!settings.masterMuted && !settings.musicMuted && settings.musicVolume > 0) startMusic();
+    },
   };
 })();
 
@@ -789,6 +804,9 @@ const PixelateShader = {
     u_resolution: { value: new THREE.Vector2(1, 1) },
     intensity: { value: config.pixelateIntensity },
     pixelSize: { value: 1 },
+    backgroundBoost: { value: 1.3 },
+    edgeBlur: { value: 0.72 },
+    foregroundDetail: { value: 0.22 },
   },
   vertexShader: [
     "varying vec2 vUv;",
@@ -803,25 +821,55 @@ const PixelateShader = {
     "uniform vec2 u_resolution;",
     "uniform float intensity;",
     "uniform float pixelSize;",
+    "uniform float backgroundBoost;",
+    "uniform float edgeBlur;",
+    "uniform float foregroundDetail;",
     "vec3 bg(vec2 uv) {",
-    "  return texture2D(tDiffuse, uv).rgb;",
+    "  return texture2D(tDiffuse, clamp(uv, vec2(0.001), vec2(0.999))).rgb;",
     "}",
-    "vec3 effect(vec2 uv, vec3 col) {",
-    "  float granularity = floor(pixelSize);",
+    "vec3 pixelSample(vec2 uv, float size) {",
+    "  float granularity = floor(size);",
+    "  vec2 sampleUv = uv;",
     "  if (granularity <= 1.0) {",
-    "    return col;",
+    "    granularity = 1.0;",
     "  }",
-    "  if (mod(granularity, 2.0) > 0.0) {",
-    "    granularity += 1.0;",
-    "  }",
+    "  if (mod(granularity, 2.0) > 0.0 && granularity > 1.0) granularity += 1.0;",
     "  float dx = granularity / u_resolution.x;",
     "  float dy = granularity / u_resolution.y;",
-    "  uv = vec2(dx * (floor(uv.x / dx) + 0.5), dy * (floor(uv.y / dy) + 0.5));",
-    "  return bg(uv);",
+    "  sampleUv = vec2(dx * (floor(sampleUv.x / dx) + 0.5), dy * (floor(sampleUv.y / dy) + 0.5));",
+    "  return bg(sampleUv);",
+    "}",
+    "vec3 blurSample(vec2 uv, float radius) {",
+    "  vec2 px = radius / u_resolution;",
+    "  vec3 col = bg(uv) * 0.22;",
+    "  col += bg(uv + vec2(px.x, 0.0)) * 0.11;",
+    "  col += bg(uv - vec2(px.x, 0.0)) * 0.11;",
+    "  col += bg(uv + vec2(0.0, px.y)) * 0.11;",
+    "  col += bg(uv - vec2(0.0, px.y)) * 0.11;",
+    "  col += bg(uv + px) * 0.085;",
+    "  col += bg(uv - px) * 0.085;",
+    "  col += bg(uv + vec2(px.x, -px.y)) * 0.085;",
+    "  col += bg(uv + vec2(-px.x, px.y)) * 0.085;",
+    "  return col;",
     "}",
     "void main() {",
     "  vec3 tex = bg(vUv);",
-    "  vec3 col = effect(vUv, tex);",
+    "  vec2 lensUv = vUv - vec2(0.5);",
+    "  lensUv.x *= u_resolution.x / max(u_resolution.y, 1.0);",
+    "  float lens = length(lensUv);",
+    "  float edge = smoothstep(0.42, 0.86, lens);",
+    "  float backgroundMask = smoothstep(0.24, 0.86, vUv.y);",
+    "  float foregroundMask = 1.0 - smoothstep(0.22, 0.62, vUv.y);",
+    "  float bgSize = pixelSize * mix(1.0, backgroundBoost, backgroundMask);",
+    "  vec3 bgPix = pixelSample(vUv, bgSize);",
+    "  vec3 centerBlur = blurSample(vUv, 1.15 + pixelSize * 0.12);",
+    "  vec3 detail = tex + (tex - centerBlur) * foregroundDetail * foregroundMask;",
+    "  vec3 col = mix(detail, bgPix, clamp(intensity * (0.72 + backgroundMask * 0.45), 0.0, 1.0));",
+    "  vec3 edgeBlurCol = blurSample(vUv, edgeBlur * (3.0 + pixelSize * 0.72));",
+    "  col = mix(col, edgeBlurCol, edge * 0.5);",
+    "  vec3 edgePix = pixelSample(vUv, pixelSize * (1.12 + edge * 0.58));",
+    "  col = mix(col, edgePix, edge * intensity * 0.28);",
+    "  col *= 1.0 - edge * 0.18;",
     "  gl_FragColor = vec4(col, 1.0);",
     "}",
   ].join("\n"),
@@ -1016,6 +1064,17 @@ const parallaxLayers = {
     renderOrder: 41,
     enabled: false,
   }),
+  foregroundPowerlines: new ParallaxLayer({
+    name: "foregroundPowerlines",
+    z: 14,
+    speedMultiplier: 0.7,
+    verticalMultiplier: 0.08,
+    wrapWidth: 156,
+    parent: foregroundLayer,
+    layerName: "foregroundLayer",
+    renderOrder: 49,
+    enabled: true,
+  }),
   edgeHaze: new ParallaxLayer({
     name: "edgeHaze",
     z: -39,
@@ -1036,6 +1095,7 @@ const buildModeHiddenAtmosphereLayers = [
   "edgeHaze",
   "foreground",
   "foregroundBase",
+  "foregroundPowerlines",
 ];
 const buildModeLayerState = new Map();
 
@@ -1447,6 +1507,156 @@ function createForegroundProp(kind) {
   return group;
 }
 
+function addWireSegment(group, start, end, material, thickness = 0.055, z = 0) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0.001) return null;
+
+  const segment = new THREE.Mesh(new THREE.BoxGeometry(length, thickness, 0.08), material);
+  segment.position.set((start.x + end.x) * 0.5, (start.y + end.y) * 0.5, z);
+  segment.rotation.z = Math.atan2(dy, dx);
+  group.add(segment);
+  return segment;
+}
+
+function addSaggingWire(group, startX, endX, startY, endY, sag, material, thickness, z) {
+  const segments = 15;
+  let previous = new THREE.Vector2(startX, startY);
+  for (let index = 1; index <= segments; index += 1) {
+    const t = index / segments;
+    const x = THREE.MathUtils.lerp(startX, endX, t);
+    const y = THREE.MathUtils.lerp(startY, endY, t) - Math.sin(t * Math.PI) * sag;
+    const current = new THREE.Vector2(x, y);
+    addWireSegment(group, previous, current, material, thickness, z);
+    previous = current;
+  }
+}
+
+function addBrushGrass(group, width, baseY, material, seed) {
+  for (let index = 0; index < 34; index += 1) {
+    const t = index / 33;
+    const x = THREE.MathUtils.lerp(-width * 0.5, width * 0.5, t);
+    const height = 0.28 + ((index * 7 + seed) % 9) * 0.08;
+    const lean = (((index * 11 + seed) % 7) - 3) * 0.045;
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.055, height, 0.06), material);
+    blade.position.set(x + lean * 4, baseY + height * 0.5, 0.16);
+    blade.rotation.z = lean;
+    group.add(blade);
+  }
+}
+
+function seededUnit(seed) {
+  return Math.sin(seed * 12.9898 + 78.233) * 43758.5453 % 1;
+}
+
+function seededRange(seed, min, max) {
+  const value = seededUnit(seed);
+  return THREE.MathUtils.lerp(min, max, value < 0 ? value + 1 : value);
+}
+
+function createPowerlineRun(index) {
+  const group = new THREE.Group();
+  group.userData.driftScale = 1;
+
+  const black = new THREE.MeshBasicMaterial({
+    color: 0x020403,
+    transparent: false,
+    depthWrite: false,
+    depthTest: false,
+  });
+  const soft = new THREE.MeshBasicMaterial({
+    color: 0x020403,
+    transparent: true,
+    opacity: 0.3,
+    depthWrite: false,
+    depthTest: false,
+  });
+  const cap = new THREE.MeshBasicMaterial({
+    color: 0x07100f,
+    transparent: true,
+    opacity: 0.96,
+    depthWrite: false,
+    depthTest: false,
+  });
+
+  const widthScale = seededRange(index + 1.1, 0.9, 1.18);
+  const poleXs = [
+    -12.8 * widthScale + seededRange(index + 4.3, -0.9, 0.55),
+    seededRange(index + 5.7, -1.4, 1.25),
+    12.4 * widthScale + seededRange(index + 6.9, -0.55, 1.0),
+  ];
+  const baseY = -49.4 + seededRange(index + 8.5, -2.5, 1.8);
+  const heights = [
+    32 + ((index * 5) % 7) + seededRange(index + 10.2, -3.4, 4.2),
+    38 + ((index * 7) % 9) + seededRange(index + 11.6, -4.2, 6.4),
+    33 + ((index * 3) % 8) + seededRange(index + 12.4, -3.0, 5.6),
+  ];
+  const topYs = heights.map((height, poleIndex) => baseY + height + (poleIndex === 1 ? seededRange(index + 13.8, 0.7, 2.4) : 0));
+
+  for (let poleIndex = 0; poleIndex < poleXs.length; poleIndex += 1) {
+    const x = poleXs[poleIndex];
+    const topY = topYs[poleIndex];
+    const height = topY - baseY;
+    const poleWidth = (poleIndex === 1 ? 0.38 : 0.3) * seededRange(index + poleIndex * 2.7, 0.82, 1.22);
+    const pole = new THREE.Mesh(new THREE.BoxGeometry(poleWidth, height, 0.22), black);
+    pole.position.set(x, baseY + height * 0.5, 0.1);
+    group.add(pole);
+
+    const baseBlock = new THREE.Mesh(new THREE.BoxGeometry(poleWidth * 2.4, 2.8, 0.2), black);
+    baseBlock.position.set(x, baseY + 1.25, 0.12);
+    group.add(baseBlock);
+
+    const upperArm = new THREE.Mesh(new THREE.BoxGeometry(seededRange(index + poleIndex + 18.2, 3.0, 4.55), 0.22, 0.16), black);
+    upperArm.position.set(x, topY - 0.65, 0.18);
+    group.add(upperArm);
+
+    const lowerArm = new THREE.Mesh(new THREE.BoxGeometry(seededRange(index + poleIndex + 24.1, 2.3, 3.7), 0.18, 0.14), black);
+    lowerArm.position.set(x, topY - 3.6, 0.18);
+    group.add(lowerArm);
+
+    const capTop = new THREE.Mesh(new THREE.BoxGeometry(seededRange(index + poleIndex + 31.7, 3.2, 4.8), 0.1, 0.12), cap);
+    capTop.position.set(x, topY - 0.4, 0.23);
+    group.add(capTop);
+
+    for (const yOffset of [-0.95, -3.85]) {
+      for (const side of [-1, 1]) {
+        const insulator = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.38, 0.14), black);
+        insulator.position.set(x + side * 1.25, topY + yOffset, 0.22);
+        group.add(insulator);
+      }
+    }
+  }
+
+  for (let poleIndex = 0; poleIndex < poleXs.length - 1; poleIndex += 1) {
+    const leftX = poleXs[poleIndex];
+    const rightX = poleXs[poleIndex + 1];
+    const leftTop = topYs[poleIndex];
+    const rightTop = topYs[poleIndex + 1];
+    const sag = 1.0 + ((index + poleIndex) % 3) * 0.34 + seededRange(index + poleIndex + 39.2, -0.24, 0.42);
+    for (const lane of [0, 1, 2]) {
+      const yOffset = -1.15 - lane * 0.68;
+      addSaggingWire(group, leftX - 2.1, rightX + 2.1, leftTop + yOffset, rightTop + yOffset - 0.3, sag + lane * 0.16, soft, 0.16, -0.03);
+      addSaggingWire(group, leftX - 2.1, rightX + 2.1, leftTop + yOffset, rightTop + yOffset - 0.3, sag + lane * 0.16, black, 0.052, 0.2);
+    }
+    addSaggingWire(group, leftX - 1.45, rightX + 1.45, leftTop - 4.25, rightTop - 4.45, sag * 0.75, black, 0.045, 0.22);
+  }
+
+  addSaggingWire(group, -18, poleXs[0] + 1.6, topYs[0] - 2.1, topYs[0] - 2.5, 0.75, black, 0.045, 0.2);
+  addSaggingWire(group, poleXs[2] - 1.4, 18, topYs[2] - 1.9, topYs[2] - 1.55, 0.7, black, 0.045, 0.2);
+  addBrushGrass(group, 38 * widthScale, baseY - 0.18, black, index * 13);
+
+  group.traverse((child) => {
+    if (child.material) {
+      child.material.depthTest = false;
+      child.material.depthWrite = false;
+    }
+    child.userData.foregroundBlur = child.material === soft;
+  });
+
+  return group;
+}
+
 function createEdgeHazeBand(index) {
   const group = new THREE.Group();
   const colors = [0x101c46, 0x26114b, 0x12375e, 0x3a1348];
@@ -1640,6 +1850,16 @@ function buildParallaxCity() {
     const prop = createForegroundProp(index % 3 === 0 ? "billboard" : "poles");
     prop.userData.driftScale = 1;
     parallaxLayers.foreground.add(prop, index * 8 - 38, -4.9 + (index % 4) * 0.28);
+  }
+
+  for (let index = 0; index < 6; index += 1) {
+    const run = createPowerlineRun(index);
+    run.scale.setScalar(seededRange(index + 52.4, 0.78, 1.08));
+    parallaxLayers.foregroundPowerlines.add(
+      run,
+      index * 30 - 75 + seededRange(index + 61.8, -3.2, 3.8),
+      -2.1 + seededRange(index + 70.3, -1.2, 0.9),
+    );
   }
 }
 
@@ -2634,6 +2854,42 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
   glbPoseSmoothingAlpha = 1;
 }
 
+function applyCharacterRimMaterial(material) {
+  if (!material || material.userData?.hookedRimLight) return;
+
+  material.userData.hookedRimLight = true;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uHookedRimColor = { value: new THREE.Color(config.characterRimColor) };
+    shader.uniforms.uHookedRimDirection = { value: config.characterRimLightDirection.clone() };
+    shader.uniforms.uHookedRimIntensity = { value: config.characterRimIntensity };
+    shader.uniforms.uHookedRimPower = { value: config.characterRimPower };
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        [
+          "#include <common>",
+          "uniform vec3 uHookedRimColor;",
+          "uniform vec3 uHookedRimDirection;",
+          "uniform float uHookedRimIntensity;",
+          "uniform float uHookedRimPower;",
+        ].join("\n"),
+      )
+      .replace(
+        "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",
+        [
+          "vec3 hookedRimNormal = normalize(normal);",
+          "vec3 hookedRimLight = normalize(uHookedRimDirection);",
+          "float hookedDirectional = pow(max(dot(hookedRimNormal, hookedRimLight), 0.0), uHookedRimPower);",
+          "float hookedEdge = pow(1.0 - abs(dot(hookedRimNormal, normalize(vViewPosition))), 1.45);",
+          "float hookedUpperBias = smoothstep(-0.15, 0.85, hookedRimNormal.y);",
+          "vec3 hookedRim = uHookedRimColor * hookedDirectional * (0.45 + hookedEdge * 0.9) * (0.35 + hookedUpperBias * 0.65) * uHookedRimIntensity;",
+          "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance + hookedRim;",
+        ].join("\n"),
+      );
+  };
+}
+
 function loadGlbCharacter() {
   if (!config.useGlbCharacter) return;
 
@@ -2667,6 +2923,7 @@ function loadGlbCharacter() {
             material.opacity = 1;
             material.depthTest = false;
             material.depthWrite = false;
+            applyCharacterRimMaterial(material);
             material.needsUpdate = true;
           }
         }
@@ -2845,6 +3102,9 @@ function updatePixelatePass() {
   pixelatePass.enabled = pixelateSettings.enabled;
   pixelatePass.uniforms.intensity.value = effectiveIntensity;
   pixelatePass.uniforms.pixelSize.value = blockSize;
+  pixelatePass.uniforms.backgroundBoost.value = 1.3;
+  pixelatePass.uniforms.edgeBlur.value = THREE.MathUtils.lerp(0.38, 0.86, effectiveIntensity);
+  pixelatePass.uniforms.foregroundDetail.value = THREE.MathUtils.lerp(0.12, 0.28, effectiveIntensity);
   if (pixelateIntensityValue) {
     pixelateIntensityValue.textContent = `${pixelateSettings.intensity.toFixed(2)} / ${blockSize}px`;
   }
@@ -2866,6 +3126,11 @@ function syncAudioControls() {
   editorUi.musicMuted = sfx.settings.musicMuted;
   editorUi.musicVolume = sfx.settings.musicVolume;
 
+  if (muteButton) {
+    setIconButtonLabel(muteButton, sfx.settings.masterMuted ? "" : "", sfx.settings.masterMuted ? "volume-x" : "volume-2");
+    muteButton.setAttribute("aria-label", sfx.settings.masterMuted ? "Unmute audio" : "Mute audio");
+    muteButton.setAttribute("aria-pressed", String(sfx.settings.masterMuted));
+  }
   if (sfxMuteButton) {
     setIconButtonLabel(sfxMuteButton, sfx.settings.sfxMuted ? "SFX off" : "SFX on", sfx.settings.sfxMuted ? "volume-x" : "volume-2");
     sfxMuteButton.setAttribute("aria-pressed", String(sfx.settings.sfxMuted));
@@ -2888,6 +3153,11 @@ function setSfxMuted(muted) {
 
 function setMusicMuted(muted) {
   sfx.setMusicMuted(muted);
+  syncAudioControls();
+}
+
+function setMasterMuted(muted) {
+  sfx.setMasterMuted(muted);
   syncAudioControls();
 }
 
@@ -5285,6 +5555,7 @@ function decorateControls() {
     [savePoseButton, "Save pose", "save"],
     [resetPoseButton, "Reset pose", "rotate-ccw"],
     [pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line"],
+    [muteButton, "", sfx.settings.masterMuted ? "volume-x" : "volume-2"],
     [sfxMuteButton, sfx.settings.sfxMuted ? "SFX off" : "SFX on", sfx.settings.sfxMuted ? "volume-x" : "volume-2"],
     [musicMuteButton, sfx.settings.musicMuted ? "Music off" : "Music on", sfx.settings.musicMuted ? "volume-x" : "music-2"],
     [resetAnchorsButton, "Reset layout", "map"],
@@ -7484,6 +7755,7 @@ canvas.addEventListener("lostpointercapture", (event) => stopPointerControl(even
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 canvas.addEventListener("wheel", scrollBuildView, { passive: false });
 bindGameButton(restartButton, reset);
+bindGameButton(muteButton, () => setMasterMuted(!sfx.settings.masterMuted));
 flourishButton.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();

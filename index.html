@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hooked Prototype</title>
     <link rel="stylesheet" href="https://ka-f.webawesome.com/releases/v3.9.0/styles/themes/default.css" />
-    <link rel="stylesheet" href="./src/styles.css?v=version-0-5-61" />
+    <link rel="stylesheet" href="./src/styles.css?v=version-0-5-62" />
     <script type="module" src="https://ka-f.webawesome.com/releases/v3.9.0/webawesome.loader.js"></script>
     <script defer src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   </head>
@@ -57,6 +57,9 @@
         <kbd>Wheel</kbd><span>Zoom view</span>
         <kbd>B</kbd><span>Build / animate</span>
       </section>
+      <button id="mute-button" type="button" aria-label="Mute audio" aria-pressed="false">
+        <span data-lucide="volume-2" aria-hidden="true"></span>
+      </button>
       <button id="flourish-button" type="button" aria-label="Flourish"><span data-lucide="sparkles" aria-hidden="true"></span><span>Flip</span></button>
       <section id="editor" aria-label="Editor tools">
         <span>Build mode</span>
@@ -171,6 +174,6 @@
       }
     }
   </script>
-  <script type="module" src="./src/main.js?v=version-0-5-61"></script>
+  <script type="module" src="./src/main.js?v=version-0-5-62"></script>
   </body>
 </html>
