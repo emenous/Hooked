@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.60";
+const GAME_VERSION = "v0.5.61";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -50,6 +50,7 @@ const musicVolumeValue = document.querySelector("#music-volume-value");
 const levelCompletePanel = document.querySelector("#level-complete");
 const completeDeathsEl = document.querySelector("#complete-deaths");
 const completeMultiplierEl = document.querySelector("#complete-multiplier");
+const completeFlipsEl = document.querySelector("#complete-flips");
 const completeScoreEl = document.querySelector("#complete-score");
 const completeRankEl = document.querySelector("#complete-rank");
 const nextLevelButton = document.querySelector("#next-level");
@@ -315,6 +316,7 @@ const state = {
   multiplierActions: new Set(),
   deaths: 0,
   highestMultiplier: 1,
+  completedFlips: 0,
   nextScoreX: 16,
   gameOver: false,
   finished: false,
@@ -325,6 +327,7 @@ const state = {
   spaceHadAnchor: false,
   flourishSpinRemaining: 0,
   flourishFlipDirection: 1,
+  flourishCompletionArmed: false,
   hookWrapPulse: 0,
   stuntAnchor: null,
   stuntLastAngle: 0,
@@ -5114,6 +5117,7 @@ function reset({ resetLevelStats = false } = {}) {
   if (resetLevelStats) {
     state.deaths = 0;
     state.highestMultiplier = 1;
+    state.completedFlips = 0;
   }
   state.player.copy(getLevelStart());
   state.previousPlayer.copy(state.player);
@@ -5152,6 +5156,7 @@ function reset({ resetLevelStats = false } = {}) {
   state.spaceHadAnchor = false;
   state.flourishSpinRemaining = 0;
   state.flourishFlipDirection = 1;
+  state.flourishCompletionArmed = false;
   state.hookWrapPulse = 0;
   state.stuntAnchor = null;
   state.stuntLastAngle = 0;
@@ -5356,6 +5361,7 @@ function showLevelComplete() {
   state.levelCompleteShown = true;
   completeDeathsEl.textContent = String(state.deaths);
   completeMultiplierEl.textContent = `${state.highestMultiplier.toFixed(1).replace(".0", "")}x`;
+  completeFlipsEl.textContent = String(state.completedFlips);
   completeScoreEl.textContent = String(state.score);
   completeRankEl.textContent = getScoreRank(state.score, state.deaths);
   levelCompletePanel.classList.remove("hidden");
@@ -5877,6 +5883,7 @@ function flourish(now) {
   state.flourishPulse = 1;
   state.flourishSpinRemaining = config.flourishSpinDuration;
   state.flourishFlipDirection = state.velocity.x >= 0 ? 1 : -1;
+  state.flourishCompletionArmed = true;
   state.flourishVariant = chooseFlourishVariant();
   if (isSlowMotionActive()) {
     addScore(9, "slow-flourish", now);
@@ -7368,7 +7375,18 @@ function tick(time) {
   state.ropeCrackle = Math.max(0, state.ropeCrackle - dt);
   const slowMotionActive = isSlowMotionActive();
   const trickDt = dt * (slowMotionActive && state.flourishSpinRemaining > 0 ? config.slowMotionTrickScale : 1);
+  const previousFlourishSpinRemaining = state.flourishSpinRemaining;
   state.flourishSpinRemaining = Math.max(0, state.flourishSpinRemaining - trickDt);
+  if (
+    state.flourishCompletionArmed &&
+    previousFlourishSpinRemaining > 0 &&
+    state.flourishSpinRemaining <= 0 &&
+    !state.gameOver &&
+    !state.finished
+  ) {
+    state.completedFlips += 1;
+    state.flourishCompletionArmed = false;
+  }
   state.stuntBurstPulse = Math.max(0, state.stuntBurstPulse - dt * 3.4);
   updateCrashExplosion(dt, now);
   playerMesh.position.copy(state.player);
