@@ -94,6 +94,7 @@ body {
 #editor,
 #level-complete,
 #game-version,
+#performance-monitor,
 #restart {
   z-index: 12;
 }
@@ -380,6 +381,13 @@ strong {
   background: rgba(244, 255, 249, 0.15);
 }
 
+#editor button.active {
+  border-color: rgba(228, 242, 75, 0.62);
+  background: rgba(228, 242, 75, 0.18);
+  color: #e4f24b;
+  box-shadow: 0 0 14px rgba(228, 242, 75, 0.12);
+}
+
 button [data-lucide],
 button svg {
   width: 16px;
@@ -459,6 +467,37 @@ kbd {
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+#performance-monitor {
+  position: absolute;
+  left: 16px;
+  bottom: 13px;
+  z-index: 12;
+  margin: 0;
+  padding: 6px 9px;
+  border: 1px solid rgba(108, 243, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(5, 12, 12, 0.52);
+  color: #dfffff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: 0;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+  white-space: pre;
+  pointer-events: none;
+}
+
+body.perf-warning #performance-monitor {
+  border-color: rgba(255, 222, 91, 0.58);
+  color: #fff0a8;
+}
+
+body.perf-danger #performance-monitor {
+  border-color: rgba(255, 86, 112, 0.68);
+  color: #ffb3c0;
 }
 
 #level-complete {
@@ -655,6 +694,7 @@ kbd,
 #level-complete,
 #level-complete *,
 #game-version,
+#performance-monitor,
 #next-level {
   user-select: none;
   -webkit-user-select: none;
@@ -802,6 +842,14 @@ kbd,
     bottom: 12px;
     font-size: 10px;
     transform: translateX(-50%) scale(0.9);
+  }
+
+  #performance-monitor {
+    left: 8px;
+    bottom: 48px;
+    font-size: 9px;
+    transform: scale(0.9);
+    transform-origin: bottom left;
   }
 
   #level-complete {

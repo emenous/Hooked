@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hooked Prototype</title>
     <link rel="stylesheet" href="https://ka-f.webawesome.com/releases/v3.9.0/styles/themes/default.css" />
-    <link rel="stylesheet" href="./src/styles.css?v=version-0-5-32" />
+    <link rel="stylesheet" href="./src/styles.css?v=version-0-5-48" />
     <script type="module" src="https://ka-f.webawesome.com/releases/v3.9.0/webawesome.loader.js"></script>
     <script defer src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   </head>
@@ -53,7 +53,8 @@
         <kbd>Release</kbd><span>Pop off</span>
         <kbd>V / R Click</kbd><span>Flourish</span>
         <kbd>Drag</kbd><span>Move objects</span>
-        <kbd>Wheel</kbd><span>Zoom build view</span>
+        <kbd>Wheel</kbd><span>Zoom view</span>
+        <kbd>B</kbd><span>Build / animate</span>
       </section>
       <button id="flourish-button" type="button" aria-label="Flourish"><span data-lucide="sparkles" aria-hidden="true"></span><span>Flip</span></button>
       <section id="editor" aria-label="Editor tools">
@@ -87,12 +88,29 @@
             <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
           </label>
           <button id="zoom-fit" type="button">Birds eye</button>
+          <fieldset id="character-tools" aria-label="Character animator">
+            <legend>Character</legend>
+            <button id="animate-character" type="button">Animate</button>
+            <button id="save-pose" type="button">Save pose</button>
+            <button id="reset-pose" type="button">Reset pose</button>
+          </fieldset>
           <fieldset id="pixelate-tools" aria-label="Pixel shader">
             <legend>Pixel shader</legend>
             <button id="pixelate-toggle" type="button" aria-pressed="false">Pixelate off</button>
             <label>
               <span>Intensity <output id="pixelate-intensity-value">0.45</output></span>
               <input id="pixelate-intensity" type="range" min="0" max="1" step="0.01" value="0.45" />
+            </label>
+          </fieldset>
+          <fieldset id="fx-tools" aria-label="Effects quality">
+            <legend>Effects</legend>
+            <label>
+              <span>FX quality</span>
+              <select id="fx-quality">
+                <option value="high">High</option>
+                <option value="medium" selected>Medium</option>
+                <option value="low">Low</option>
+              </select>
             </label>
           </fieldset>
           <button id="reset-anchors" type="button">Reset layout</button>
@@ -124,6 +142,7 @@
         <button id="next-level" type="button"><span data-lucide="arrow-right" aria-hidden="true"></span><span>Next Level</span></button>
       </section>
       <p id="game-version" aria-label="Current version"></p>
+      <p id="performance-monitor" aria-label="Performance monitor"></p>
       <button id="restart" type="button" aria-label="Restart"><span data-lucide="rotate-ccw" aria-hidden="true"></span><span>Restart</span></button>
     </main>
 
@@ -134,6 +153,6 @@
       }
     }
   </script>
-  <script type="module" src="./src/main.js?v=version-0-5-32"></script>
+  <script type="module" src="./src/main.js?v=version-0-5-48"></script>
   </body>
 </html>
