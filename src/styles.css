@@ -538,7 +538,7 @@ body.perf-danger #performance-monitor {
   text-transform: uppercase;
 }
 
-.jeremy-callout {
+.result-callout {
   position: relative;
   z-index: 1;
   margin: -6px 0 0;
@@ -864,7 +864,7 @@ kbd,
     font-size: 28px;
   }
 
-  .jeremy-callout {
+  .result-callout {
     font-size: 34px;
   }
 
