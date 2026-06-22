@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "purpose": "Step 1 intake list for Swing pose references. These are visual targets before numeric pose values are authored.",
+  "referenceRoot": "assets/reference/swing-poses",
+  "globalRules": {
+    "leftArm": "When hooked, left hand/wrist is the grapple hand and must stay aligned to the rope direction.",
+    "bodyParts": "Body parts remain rigid. No stretching.",
+    "legs": "Legs react to swing momentum and direction, not random bend.",
+    "ribbon": "Ribbon is anchored to the back of the head and trails motion.",
+    "poseStorage": "Later steps convert approved references into numeric joint rotations and blend rules."
+  },
+  "poses": [
+    {
+      "key": "idle_hang",
+      "label": "Idle hang",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 3,
+      "motion": "stationary or near stationary",
+      "mustShow": [
+        "relaxed upright silhouette",
+        "arms not stiff",
+        "knees slightly natural",
+        "ribbon resting or lightly trailing"
+      ],
+      "notes": ""
+    },
+    {
+      "key": "hook_firing",
+      "label": "Hook firing",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 3,
+      "motion": "pre-catch, grapple being fired",
+      "mustShow": [
+        "left arm reaching toward rope direction",
+        "right arm balancing",
+        "body preparing for tension"
+      ],
+      "notes": ""
+    },
+    {
+      "key": "hook_catch",
+      "label": "Hook catch",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 1,
+      "motion": "first moment rope takes weight",
+      "mustShow": [
+        "left wrist on rope line",
+        "left shoulder pulled by rope",
+        "body compressing under catch",
+        "legs reacting to sudden tension"
+      ],
+      "notes": ""
+    },
+    {
+      "key": "down_swing",
+      "label": "Down swing",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 1,
+      "motion": "falling along rope arc",
+      "mustShow": [
+        "left arm aligned to rope",
+        "torso pulled under anchor",
+        "legs trailing behind velocity",
+        "right arm used for balance"
+      ],
+      "notes": ""
+    },
+    {
+      "key": "bottom_swing",
+      "label": "Bottom of swing",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 1,
+      "motion": "fastest point of swing",
+      "mustShow": [
+        "strong rope tension",
+        "left arm extended on rope line",
+        "legs pushed forward by momentum",
+        "torso arced through swing"
+      ],
+      "notes": ""
+    },
+    {
+      "key": "up_swing",
+      "label": "Up swing",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 1,
+      "motion": "rising after bottom arc",
+      "mustShow": [
+        "body elongated by upward momentum",
+        "left arm still on rope line",
+        "legs following through",
+        "right arm counterbalancing"
+      ],
+      "notes": ""
+    },
+    {
+      "key": "release_launch",
+      "label": "Release launch",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 2,
+      "motion": "rope released, body launching",
+      "mustShow": [
+        "clean launch silhouette",
+        "limbs following velocity",
+        "no rope tension",
+        "ribbon trailing away from motion"
+      ],
+      "notes": ""
+    },
+    {
+      "key": "falling",
+      "label": "Falling",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 2,
+      "motion": "airborne with no grapple",
+      "mustShow": [
+        "loose but believable body",
+        "no stretched limbs",
+        "legs and free arm reacting to fall"
+      ],
+      "notes": ""
+    },
+    {
+      "key": "backflip_tuck",
+      "label": "Backflip tuck",
+      "file": "",
+      "status": "needs_reference",
+      "priority": 2,
+      "motion": "flourish or flip",
+      "mustShow": [
+        "compact barrel shape",
+        "knees tucked",
+        "arms tucked or controlled",
+        "ribbon wrapping/trailing with spin"
+      ],
+      "notes": ""
+    }
+  ]
+}

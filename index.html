@@ -5,13 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hooked Prototype</title>
     <link rel="stylesheet" href="https://ka-f.webawesome.com/releases/v3.9.0/styles/themes/default.css" />
-    <link rel="stylesheet" href="./src/styles.css?v=version-0-5-49" />
+    <link rel="stylesheet" href="./src/styles.css?v=version-0-5-60" />
     <script type="module" src="https://ka-f.webawesome.com/releases/v3.9.0/webawesome.loader.js"></script>
     <script defer src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   </head>
   <body>
     <main id="game-shell">
       <canvas id="game"></canvas>
+      <div id="bottom-vignette" aria-hidden="true"></div>
       <section id="hud" aria-label="Game status">
         <div>
           <span class="label">Score</span>
@@ -113,6 +114,19 @@
               </select>
             </label>
           </fieldset>
+          <fieldset id="audio-tools" aria-label="Audio options">
+            <legend>Audio</legend>
+            <button id="sfx-mute" type="button" aria-pressed="false">SFX on</button>
+            <label>
+              <span>SFX <output id="sfx-volume-value">70%</output></span>
+              <input id="sfx-volume" type="range" min="0" max="1" step="0.01" value="0.7" />
+            </label>
+            <button id="music-mute" type="button" aria-pressed="false">Music on</button>
+            <label>
+              <span>Music <output id="music-volume-value">38%</output></span>
+              <input id="music-volume" type="range" min="0" max="1" step="0.01" value="0.38" />
+            </label>
+          </fieldset>
           <button id="reset-anchors" type="button">Reset layout</button>
         </div>
       </section>
@@ -153,6 +167,6 @@
       }
     }
   </script>
-  <script type="module" src="./src/main.js?v=version-0-5-49"></script>
+  <script type="module" src="./src/main.js?v=version-0-5-60"></script>
   </body>
 </html>

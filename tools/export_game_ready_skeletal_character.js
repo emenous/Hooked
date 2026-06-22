@@ -6,7 +6,7 @@ const blenderPath = "C:/Program Files/Blender Foundation/Blender 4.2/blender.exe
 const sourceBlend = "assets/models/hyper3d-new/sling_hyper3d_new_skeletal.blend";
 const outputBlend = "assets/models/hyper3d-new/sling_hyper3d_new_game_ready.blend";
 const outputGlb = "assets/models/m_character_skeletal.glb";
-const backupDir = "C:/tmp/hooked-character-backups";
+const backupDir = "assets/models/backups";
 
 fs.mkdirSync(backupDir, { recursive: true });
 if (fs.existsSync(outputGlb)) {
@@ -93,9 +93,9 @@ def reset_pose(armature):
 
 def blender_world_to_game(world_point, origin):
     shifted = world_point - origin
-    # Source editing file is Blender-friendly: X screen/right, Z up, Y depth.
-    # Runtime GLB must be game-friendly: X screen/right, Y up, Z depth.
-    return Vector((shifted.x, shifted.z, -shifted.y))
+    # Source editing file is Blender/Rigify-friendly: X body width, -Y forward, Z up.
+    # Runtime GLB is side-scroller-friendly: X forward/screen, Y up, Z depth.
+    return Vector((-shifted.y, shifted.z, shifted.x))
 
 def delete_collection(name):
     collection = bpy.data.collections.get(name)

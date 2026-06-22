@@ -2,11 +2,11 @@
 
 ## Current Runtime Asset
 
-The game should load:
+The game currently loads:
 
-`assets/models/m_character_skeletal.glb`
+`assets/models/m_character_skeletal_textures_1k.glb`
 
-This file contains the real glTF skeleton/skin. The older `m_character.glb` is only a rigid pivot hierarchy and is not suitable for imported animation clips.
+This file contains the real glTF skeleton/skin plus reduced 1K embedded textures. The older `m_character.glb` is only a rigid pivot hierarchy and is not suitable for imported animation clips. `m_character_skeletal.glb` is the larger skeletal export and should be treated as a source/intermediate asset unless the game config is intentionally pointed at it.
 
 ## Source Files
 
@@ -18,6 +18,8 @@ This file contains the real glTF skeleton/skin. The older `m_character.glb` is o
   `assets/models/hyper3d-new/sling_hyper3d_new_game_ready.blend` (local byproduct, ignored by Git)
 - Generated skeletal GLB:
   `assets/models/m_character_skeletal.glb`
+- Current game GLB:
+  `assets/models/m_character_skeletal_textures_1k.glb`
 
 The editable file may use a Blender-friendly view orientation. The runtime GLB must always be baked into game axes:
 
@@ -87,6 +89,50 @@ This is an animation-capable skeleton, but it is not a direct Mixamo/Unity human
 - `right_ankle_pivot`
 
 If the diagnostic clip bends a part the wrong way, fix the bone rest axis or source pivot in Blender before trying imported animation clips.
+
+## Runtime Payload Snapshot
+
+Current audited game asset:
+
+```bash
+node tools/audit_glb_payload.js assets/models/m_character_skeletal_textures_1k.glb
+node tools/audit_glb_mesh_breakdown.js assets/models/m_character_skeletal_textures_1k.glb
+```
+
+Latest numbers:
+
+- File size: 8,671,504 bytes.
+- Meshes: 19.
+- Primitives: 21.
+- Materials: 21.
+- Textures: 63.
+- Embedded images: 4, about 2.7 MB total.
+- Geometry payload: about 6.0 MB.
+- Vertices: 109,353.
+- Triangles: 36,480.
+
+Highest-density pieces:
+
+- `left_thigh_mesh_data.001`: 10,770 vertices / 3,592 triangles.
+- `right_thigh_mesh_data.001`: 10,768 vertices / 3,592 triangles.
+- `head_mesh_data.001`: 9,324 vertices / 3,108 triangles.
+- `chest_mesh_data.001`: 8,638 vertices / 2,884 triangles.
+- shins, feet, and hands are also heavy for their on-screen size.
+
+This is usable for prototyping, but it is not the final model budget. The AI-generated mesh carries a lot of noisy surface detail that does not read clearly at gameplay distance.
+
+## Target Remodel Budget
+
+For the next clean Sling model pass, aim for:
+
+- 8k-20k total triangles for the whole character.
+- 1 armature, 1 skin, 20 required joints.
+- 19 or fewer skinned mesh nodes.
+- 1-4 materials total if possible.
+- Flat colors or one 1K texture atlas instead of many texture bindings.
+- No hidden cameras, lights, backup meshes, or source reference objects in the exported GLB.
+
+The safest rebuild path is to keep this AI mesh as a visual reference, rebuild the hard-surface armor as clean modular pieces in Blender, then bind those pieces to the existing named armature.
 
 ## Retargeting Premade Animation Clips
 

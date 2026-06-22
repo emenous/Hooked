@@ -3,25 +3,23 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-REMOTE_USER="${HOOKED_DEPLOY_USER:-u289597582}"
-REMOTE_HOST="${HOOKED_DEPLOY_HOST:-147.93.42.188}"
-REMOTE_PORT="${HOOKED_DEPLOY_PORT:-65002}"
-REMOTE_PATH="${HOOKED_DEPLOY_PATH:-domains/prntscrn.dev/public_html/Hooked/}"
-SSH_KEY="${HOOKED_DEPLOY_KEY:-$HOME/.ssh/hooked_deploy_ed25519}"
-
 cd "$ROOT_DIR"
 
-rsync -az --delete \
-  --exclude ".git/" \
-  --exclude ".DS_Store" \
-  --exclude ".last-deploy-watch" \
-  --exclude "scripts/" \
-  --exclude "tools/" \
-  --exclude "unity-transfer/" \
-  --exclude "Hooked_Unity_Transfer.zip" \
-  --exclude "server.out.log" \
-  --exclude "server.err.log" \
-  -e "ssh -i ${SSH_KEY} -p ${REMOTE_PORT}" \
-  ./ "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
+REMOTE_NAME="${HOOKED_GITHUB_REMOTE:-origin}"
+REMOTE_URL="$(git remote get-url "$REMOTE_NAME")"
 
-echo "Deployed to ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
+if [[ "$REMOTE_URL" != *"github.com"* ]]; then
+  echo "Refusing to push live: ${REMOTE_NAME} does not point at GitHub (${REMOTE_URL})."
+  exit 1
+fi
+
+BRANCH="$(git branch --show-current)"
+
+if [[ -z "$BRANCH" ]]; then
+  echo "Refusing to push live from a detached HEAD. Check out a branch first."
+  exit 1
+fi
+
+echo "Pushing live to GitHub: ${REMOTE_NAME}/${BRANCH}"
+git push "$REMOTE_NAME" "HEAD:${BRANCH}"
+echo "Pushed live to ${REMOTE_URL} (${BRANCH})."

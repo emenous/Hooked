@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.49";
+const GAME_VERSION = "v0.5.60";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -41,6 +41,12 @@ const pixelateToggleButton = document.querySelector("#pixelate-toggle");
 const pixelateIntensityInput = document.querySelector("#pixelate-intensity");
 const pixelateIntensityValue = document.querySelector("#pixelate-intensity-value");
 const fxQualitySelect = document.querySelector("#fx-quality");
+const sfxMuteButton = document.querySelector("#sfx-mute");
+const sfxVolumeInput = document.querySelector("#sfx-volume");
+const sfxVolumeValue = document.querySelector("#sfx-volume-value");
+const musicMuteButton = document.querySelector("#music-mute");
+const musicVolumeInput = document.querySelector("#music-volume");
+const musicVolumeValue = document.querySelector("#music-volume-value");
 const levelCompletePanel = document.querySelector("#level-complete");
 const completeDeathsEl = document.querySelector("#complete-deaths");
 const completeMultiplierEl = document.querySelector("#complete-multiplier");
@@ -74,6 +80,9 @@ const config = {
   releasePopTangent: 2.2,
   releasePopUpwardBonus: 2.8,
   grappleRange: 13.5,
+  downwardTargetMinDelta: 0.18,
+  downwardTargetScreenMargin: 0.75,
+  fallbackAimUpwardBias: 0.24,
   forwardGrappleSpeed: 6.5,
   forwardAnchorBonus: 3.2,
   behindAnchorPenalty: 8.5,
@@ -158,7 +167,8 @@ const config = {
   performanceUiUpdateInterval: 0.25,
   performanceStutterFrameMs: 22.2,
   performanceHardStutterFrameMs: 33.4,
-  droneMalfunctionChance: 0.1,
+  droneMalfunctionChance: 0.2,
+  anchorMalfunctionBehindMargin: 0.35,
   droneMalfunctionSparkChance: 18,
   ribbonSpring: 34,
   ribbonDamping: 0.82,
@@ -185,6 +195,7 @@ const config = {
   useGlbCharacter: true,
   glbCharacterPath: "./assets/models/m_character_skeletal_textures_1k.glb",
   freezeGlbCharacterPose: false,
+  glbPoseMode: "ragdollLite",
   stableGlbPose: true,
   stableGrappleSocketX: 0.14,
   stableGrappleSocketY: 0.5,
@@ -193,6 +204,11 @@ const config = {
   glbPoseSmoothing: 18,
   pixelateEnabled: false,
   pixelateIntensity: 0.45,
+  pixelateMaxBlockSize: 34,
+  pixelateReferenceZoom: 18,
+  pixelateZoomScalePower: 1.15,
+  pixelateMinZoomScale: 0.22,
+  pixelateMaxZoomScale: 1.35,
 };
 
 const characterVisualScale = 1;
@@ -255,6 +271,10 @@ const editorUi = {
   pixelate: pixelateSettings.enabled,
   pixelateIntensity: pixelateSettings.intensity,
   fxQuality: fxQualitySettings.level,
+  sfxMuted: false,
+  sfxVolume: 0.7,
+  musicMuted: false,
+  musicVolume: 0.38,
 };
 
 let tweakPane = null;
@@ -339,6 +359,357 @@ const scratchPerpDirection = new THREE.Vector3();
 const scratchRopeStart = new THREE.Vector3();
 const scratchRopeEnd = new THREE.Vector3();
 
+const sfx = (() => {
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  const storageKey = "hooked.audio.settings.v1";
+  const settings = {
+    sfxVolume: 0.7,
+    musicVolume: 0.38,
+    sfxMuted: false,
+    musicMuted: false,
+  };
+  if (!AudioContextCtor) {
+    return {
+      settings,
+      unlock() {},
+      play() {},
+      loadSettings() {},
+      setSfxVolume(value) { settings.sfxVolume = THREE.MathUtils.clamp(Number(value), 0, 1); },
+      setMusicVolume(value) { settings.musicVolume = THREE.MathUtils.clamp(Number(value), 0, 1); },
+      setSfxMuted(value) { settings.sfxMuted = Boolean(value); },
+      setMusicMuted(value) { settings.musicMuted = Boolean(value); },
+    };
+  }
+
+  let ctx = null;
+  let sfxBus = null;
+  let musicBus = null;
+  let musicFilter = null;
+  let lastPlayed = new Map();
+  let noiseBuffer = null;
+  let musicTimer = null;
+  let nextMusicTime = 0;
+  let musicStep = 0;
+  const bpm = 92;
+  const stepTime = 60 / bpm / 2;
+  const bassPattern = [55, 55, 82.41, 55, 46.25, 46.25, 73.42, 82.41, 41.2, 41.2, 61.74, 41.2, 49, 49, 73.42, 82.41];
+  const arpPattern = [220, 329.63, 440, 659.25, 246.94, 369.99, 493.88, 739.99];
+  const padChords = [
+    [110, 164.81, 220],
+    [92.5, 146.83, 220],
+    [82.41, 123.47, 196],
+    [98, 146.83, 246.94],
+  ];
+
+  function getContext() {
+    if (!ctx) {
+      ctx = new AudioContextCtor();
+      sfxBus = ctx.createGain();
+      musicBus = ctx.createGain();
+      musicFilter = ctx.createBiquadFilter();
+      musicFilter.type = "lowpass";
+      musicFilter.frequency.value = 2100;
+      musicFilter.Q.value = 0.55;
+      sfxBus.connect(ctx.destination);
+      musicBus.connect(musicFilter).connect(ctx.destination);
+      applyVolumes();
+    }
+    return ctx;
+  }
+
+  function applyVolumes() {
+    if (!ctx || !sfxBus || !musicBus) return;
+    const now = ctx.currentTime;
+    sfxBus.gain.setTargetAtTime(settings.sfxMuted ? 0 : settings.sfxVolume * 0.28, now, 0.02);
+    musicBus.gain.setTargetAtTime(settings.musicMuted ? 0 : settings.musicVolume * 0.22, now, 0.08);
+  }
+
+  function saveSettings() {
+    localStorage.setItem(storageKey, JSON.stringify(settings));
+  }
+
+  function loadSettings() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(storageKey));
+      if (!stored || typeof stored !== "object") return;
+      if (Number.isFinite(stored.sfxVolume)) settings.sfxVolume = THREE.MathUtils.clamp(stored.sfxVolume, 0, 1);
+      if (Number.isFinite(stored.musicVolume)) settings.musicVolume = THREE.MathUtils.clamp(stored.musicVolume, 0, 1);
+      if (typeof stored.sfxMuted === "boolean") settings.sfxMuted = stored.sfxMuted;
+      if (typeof stored.musicMuted === "boolean") settings.musicMuted = stored.musicMuted;
+    } catch {
+      localStorage.removeItem(storageKey);
+    } finally {
+      applyVolumes();
+    }
+  }
+
+  function startMusic() {
+    const audio = getContext();
+    if (musicTimer) return;
+    nextMusicTime = audio.currentTime + 0.08;
+    musicTimer = window.setInterval(scheduleMusic, 120);
+    scheduleMusic();
+  }
+
+  function unlock() {
+    const audio = getContext();
+    if (audio.state === "suspended") audio.resume();
+    startMusic();
+  }
+
+  function getNoiseBuffer() {
+    const audio = getContext();
+    if (noiseBuffer) return noiseBuffer;
+
+    const length = Math.max(1, Math.floor(audio.sampleRate * 0.55));
+    noiseBuffer = audio.createBuffer(1, length, audio.sampleRate);
+    const channel = noiseBuffer.getChannelData(0);
+    for (let index = 0; index < length; index += 1) {
+      channel[index] = Math.random() * 2 - 1;
+    }
+    return noiseBuffer;
+  }
+
+  function shapeGain(gain, now, points) {
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(points[0][1], now + points[0][0]);
+    for (let index = 1; index < points.length; index += 1) {
+      gain.linearRampToValueAtTime(points[index][1], now + points[index][0]);
+    }
+  }
+
+  function tone({
+    start,
+    type = "sine",
+    frequency = 440,
+    endFrequency = frequency,
+    detune = 0,
+    duration = 0.12,
+    gain = 0.45,
+    attack = 0.006,
+    release = 0.04,
+    filter = null,
+    destination = sfxBus,
+  }) {
+    const audio = getContext();
+    const oscillator = audio.createOscillator();
+    const envelope = audio.createGain();
+    const now = start ?? audio.currentTime;
+    oscillator.type = type;
+    oscillator.detune.value = detune;
+    oscillator.frequency.setValueAtTime(Math.max(1, frequency), now);
+    oscillator.frequency.exponentialRampToValueAtTime(Math.max(1, endFrequency), now + duration);
+    shapeGain(envelope.gain, now, [
+      [0, 0.0001],
+      [attack, gain],
+      [Math.max(attack, duration - release), gain * 0.34],
+      [duration, 0.0001],
+    ]);
+    if (filter) {
+      const filterNode = audio.createBiquadFilter();
+      filterNode.type = filter.type ?? "lowpass";
+      filterNode.frequency.setValueAtTime(filter.frequency ?? 1200, now);
+      filterNode.Q.value = filter.q ?? 0.8;
+      oscillator.connect(filterNode).connect(envelope).connect(destination);
+    } else {
+      oscillator.connect(envelope).connect(destination);
+    }
+    oscillator.start(now);
+    oscillator.stop(now + duration + 0.04);
+  }
+
+  function noise({ start, duration = 0.12, gain = 0.32, filter = 1200, type = "bandpass", destination = sfxBus }) {
+    const audio = getContext();
+    const now = start ?? audio.currentTime;
+    const source = audio.createBufferSource();
+    const filterNode = audio.createBiquadFilter();
+    const envelope = audio.createGain();
+    source.buffer = getNoiseBuffer();
+    filterNode.type = type;
+    filterNode.frequency.setValueAtTime(filter, now);
+    filterNode.frequency.exponentialRampToValueAtTime(Math.max(40, filter * 0.42), now + duration);
+    filterNode.Q.value = 1.3;
+    shapeGain(envelope.gain, now, [
+      [0, 0.0001],
+      [0.01, gain],
+      [duration, 0.0001],
+    ]);
+    source.connect(filterNode).connect(envelope).connect(destination);
+    source.start(now);
+    source.stop(now + duration + 0.04);
+  }
+
+  function canPlay(name, cooldown = 0.035) {
+    const audio = getContext();
+    const previous = lastPlayed.get(name) ?? -Infinity;
+    if (audio.currentTime - previous < cooldown) return false;
+    lastPlayed.set(name, audio.currentTime);
+    return true;
+  }
+
+  function synthKick(start) {
+    tone({ start, type: "sine", frequency: 72, endFrequency: 38, duration: 0.18, gain: 0.42, attack: 0.002, release: 0.12, destination: musicBus });
+  }
+
+  function synthHat(start, open = false) {
+    noise({ start, duration: open ? 0.18 : 0.055, gain: open ? 0.045 : 0.035, filter: 6200, type: "highpass", destination: musicBus });
+  }
+
+  function synthBass(start, frequency) {
+    tone({ start, type: "sawtooth", frequency, endFrequency: frequency * 0.995, duration: stepTime * 0.72, gain: 0.16, attack: 0.006, release: 0.12, filter: { frequency: 480, q: 1.1 }, destination: musicBus });
+    tone({ start, type: "square", frequency: frequency / 2, endFrequency: frequency / 2, duration: stepTime * 0.7, gain: 0.055, attack: 0.006, release: 0.14, filter: { frequency: 360, q: 0.8 }, destination: musicBus });
+  }
+
+  function synthArp(start, frequency) {
+    tone({ start, type: "triangle", frequency, endFrequency: frequency * 1.004, duration: stepTime * 0.42, gain: 0.055, attack: 0.012, release: 0.08, filter: { frequency: 1850, q: 0.9 }, destination: musicBus });
+    tone({ start, type: "sawtooth", frequency: frequency * 2.005, endFrequency: frequency * 2.005, duration: stepTime * 0.36, gain: 0.018, attack: 0.01, release: 0.06, filter: { frequency: 2600, q: 0.6 }, destination: musicBus });
+  }
+
+  function synthPad(start, chord) {
+    for (const [index, frequency] of chord.entries()) {
+      tone({ start, type: "sawtooth", frequency, endFrequency: frequency * 1.002, detune: index % 2 ? -8 : 7, duration: stepTime * 7.5, gain: 0.035, attack: 0.32, release: 0.9, filter: { frequency: 1180, q: 0.45 }, destination: musicBus });
+    }
+  }
+
+  function scheduleMusic() {
+    const audio = getContext();
+    while (nextMusicTime < audio.currentTime + 0.75) {
+      const step = musicStep % 16;
+      if (step % 4 === 0) synthKick(nextMusicTime);
+      if (step % 2 === 1) synthHat(nextMusicTime, step % 8 === 7);
+      synthBass(nextMusicTime, bassPattern[step]);
+      if (step % 2 === 0 || step === 15) synthArp(nextMusicTime + stepTime * 0.52, arpPattern[(musicStep + Math.floor(musicStep / 8)) % arpPattern.length]);
+      if (step === 0) synthPad(nextMusicTime, padChords[Math.floor(musicStep / 16) % padChords.length]);
+      nextMusicTime += stepTime;
+      musicStep += 1;
+    }
+  }
+
+  const sounds = {
+    jump() {
+      if (!canPlay("jump", 0.09)) return;
+      const now = getContext().currentTime;
+      tone({ start: now, type: "sawtooth", frequency: 88, endFrequency: 132, duration: 0.16, gain: 0.13, filter: { frequency: 520, q: 0.7 } });
+      noise({ start: now, duration: 0.11, gain: 0.045, filter: 760, type: "bandpass" });
+    },
+    hookShot() {
+      if (!canPlay("hookShot", 0.08)) return;
+      const now = getContext().currentTime;
+      tone({ start: now, type: "sawtooth", frequency: 176, endFrequency: 82, duration: 0.16, gain: 0.15, filter: { frequency: 1250, q: 1.2 } });
+      noise({ start: now, duration: 0.13, gain: 0.08, filter: 2400, type: "bandpass" });
+    },
+    hookCatch(speed = 0) {
+      if (!canPlay("hookCatch", 0.08)) return;
+      const now = getContext().currentTime;
+      const punch = THREE.MathUtils.clamp(speed / 18, 0, 1);
+      tone({ start: now, type: "sawtooth", frequency: 110, endFrequency: 54, duration: 0.13, gain: 0.18 + punch * 0.13, filter: { frequency: 640, q: 1.4 } });
+      tone({ start: now + 0.035, type: "triangle", frequency: 220, endFrequency: 165, duration: 0.2, gain: 0.06 + punch * 0.04, filter: { frequency: 900, q: 0.8 } });
+      noise({ start: now, duration: 0.1, gain: 0.1 + punch * 0.06, filter: 1450, type: "bandpass" });
+    },
+    release() {
+      if (!canPlay("release", 0.08)) return;
+      const now = getContext().currentTime;
+      tone({ start: now, type: "triangle", frequency: 196, endFrequency: 330, duration: 0.16, gain: 0.09, filter: { frequency: 1000, q: 0.7 } });
+      noise({ start: now, duration: 0.08, gain: 0.035, filter: 1900, type: "highpass" });
+    },
+    flourish() {
+      if (!canPlay("flourish", 0.14)) return;
+      const now = getContext().currentTime;
+      tone({ start: now, type: "sawtooth", frequency: 220, endFrequency: 440, duration: 0.18, gain: 0.075, filter: { frequency: 1250, q: 0.8 } });
+      tone({ start: now + 0.11, type: "triangle", frequency: 329.63, endFrequency: 659.25, duration: 0.18, gain: 0.055, filter: { frequency: 1450, q: 0.7 } });
+    },
+    ring() {
+      if (!canPlay("ring", 0.06)) return;
+      const now = getContext().currentTime;
+      tone({ start: now, type: "triangle", frequency: 659.25, endFrequency: 493.88, duration: 0.16, gain: 0.08, filter: { frequency: 1800, q: 0.75 } });
+      tone({ start: now + 0.055, type: "sine", frequency: 987.77, endFrequency: 739.99, duration: 0.16, gain: 0.045 });
+    },
+    slowMo() {
+      if (!canPlay("slowMo", 0.12)) return;
+      const now = getContext().currentTime;
+      tone({ start: now, type: "sawtooth", frequency: 440, endFrequency: 110, duration: 0.42, gain: 0.1, filter: { frequency: 780, q: 1.2 } });
+      noise({ start: now, duration: 0.32, gain: 0.06, filter: 620, type: "lowpass" });
+    },
+    crash() {
+      if (!canPlay("crash", 0.3)) return;
+      const now = getContext().currentTime;
+      tone({ start: now, type: "sawtooth", frequency: 96, endFrequency: 32, duration: 0.34, gain: 0.23, filter: { frequency: 520, q: 1.4 } });
+      noise({ start: now, duration: 0.3, gain: 0.2, filter: 420, type: "lowpass" });
+      noise({ start: now + 0.03, duration: 0.16, gain: 0.1, filter: 2100, type: "bandpass" });
+    },
+    malfunction() {
+      if (!canPlay("malfunction", 0.2)) return;
+      const now = getContext().currentTime;
+      for (let index = 0; index < 4; index += 1) {
+        tone({
+          start: now + index * 0.038,
+          type: "square",
+          frequency: 92 + index * 37,
+          endFrequency: 41,
+          duration: 0.075,
+          gain: 0.085,
+          filter: { frequency: 1150 + index * 120, q: 1.1 },
+        });
+      }
+      noise({ start: now, duration: 0.2, gain: 0.075, filter: 2800, type: "bandpass" });
+    },
+    finish() {
+      if (!canPlay("finish", 0.8)) return;
+      const now = getContext().currentTime;
+      [220, 329.63, 440, 659.25].forEach((frequency, index) => {
+        tone({
+          start: now + index * 0.08,
+          type: "sawtooth",
+          frequency,
+          endFrequency: frequency * 1.002,
+          duration: 0.24,
+          gain: 0.075,
+          filter: { frequency: 1550, q: 0.65 },
+        });
+      });
+    },
+  };
+
+  function play(name, ...args) {
+    if (!sounds[name]) return;
+    try {
+      unlock();
+      if (!settings.sfxMuted && settings.sfxVolume > 0) sounds[name](...args);
+    } catch {
+      // Audio should never interrupt gameplay.
+    }
+  }
+
+  return {
+    settings,
+    unlock,
+    play,
+    loadSettings,
+    setSfxVolume(value) {
+      settings.sfxVolume = THREE.MathUtils.clamp(Number(value), 0, 1);
+      saveSettings();
+      applyVolumes();
+    },
+    setMusicVolume(value) {
+      settings.musicVolume = THREE.MathUtils.clamp(Number(value), 0, 1);
+      saveSettings();
+      applyVolumes();
+      if (!settings.musicMuted && settings.musicVolume > 0) startMusic();
+    },
+    setSfxMuted(value) {
+      settings.sfxMuted = Boolean(value);
+      saveSettings();
+      applyVolumes();
+    },
+    setMusicMuted(value) {
+      settings.musicMuted = Boolean(value);
+      saveSettings();
+      applyVolumes();
+      if (!settings.musicMuted) startMusic();
+    },
+  };
+})();
+
 function suppressNativeTouch(event) {
   if (event.touches.length > 1 || gameShell.contains(event.target)) {
     event.preventDefault();
@@ -414,6 +785,7 @@ const PixelateShader = {
     tDiffuse: { value: null },
     u_resolution: { value: new THREE.Vector2(1, 1) },
     intensity: { value: config.pixelateIntensity },
+    pixelSize: { value: 1 },
   },
   vertexShader: [
     "varying vec2 vUv;",
@@ -427,11 +799,12 @@ const PixelateShader = {
     "uniform sampler2D tDiffuse;",
     "uniform vec2 u_resolution;",
     "uniform float intensity;",
+    "uniform float pixelSize;",
     "vec3 bg(vec2 uv) {",
     "  return texture2D(tDiffuse, uv).rgb;",
     "}",
     "vec3 effect(vec2 uv, vec3 col) {",
-    "  float granularity = floor(mix(1.0, 34.0, intensity));",
+    "  float granularity = floor(pixelSize);",
     "  if (granularity <= 1.0) {",
     "    return col;",
     "  }",
@@ -718,6 +1091,14 @@ window.HookedDebug = {
     return {
       level: fxQualitySettings.level,
       profile: getFxProfile(),
+    };
+  },
+  poseMode(mode) {
+    if (mode) config.glbPoseMode = mode;
+    return {
+      mode: config.glbPoseMode,
+      available: ["ragdollLite", "relative", "stable"],
+      note: "ragdollLite keeps the left arm aligned to the grapple and drives other limbs from velocity/gravity.",
     };
   },
   toggleGroup(name, enabled) {
@@ -1485,7 +1866,7 @@ const glbJointLimits = {
   loadElbow: [-0.32, 0.32],
   wrist: [-0.42, 0.42],
   hip: [-0.95, 0.95],
-  knee: [-0.02, 1.05],
+  knee: [-1.05, 0.02],
   ankle: [-0.36, 0.36],
 };
 
@@ -1796,8 +2177,8 @@ function setGlbLegSwingPose(pivots, {
   let trail = 0;
   let leftHip = 0.02;
   let rightHip = -0.015;
-  let leftKnee = 0.02;
-  let rightKnee = 0.02;
+  let leftKnee = -0.02;
+  let rightKnee = -0.02;
   let leftAnkle = -0.02;
   let rightAnkle = 0.02;
 
@@ -1806,8 +2187,8 @@ function setGlbLegSwingPose(pivots, {
     const kneeFlex = clampJoint(0.12 + swingAmount * 0.34 + Math.max(0, fallTuck) * 0.14, 0.06, 0.62);
     leftHip = trail + 0.1;
     rightHip = trail - 0.09;
-    leftKnee = kneeFlex;
-    rightKnee = kneeFlex * 0.82;
+    leftKnee = -kneeFlex;
+    rightKnee = -kneeFlex * 0.82;
     leftAnkle = clampJoint(-trail * 0.18 + kneeFlex * 0.12, -0.26, 0.26);
     rightAnkle = clampJoint(-trail * 0.14 + kneeFlex * 0.1, -0.24, 0.24);
   } else if (airborne) {
@@ -1815,20 +2196,20 @@ function setGlbLegSwingPose(pivots, {
     const kneeFlex = clampJoint(0.1 + Math.max(0, fallTuck) * 0.28, 0.04, 0.48);
     leftHip = trail + 0.1;
     rightHip = trail - 0.08;
-    leftKnee = kneeFlex;
-    rightKnee = kneeFlex * 0.75;
+    leftKnee = -kneeFlex;
+    rightKnee = -kneeFlex * 0.75;
     leftAnkle = clampJoint(-trail * 0.2 + kneeFlex * 0.12, -0.26, 0.26);
     rightAnkle = clampJoint(-trail * 0.16 + kneeFlex * 0.1, -0.24, 0.24);
   }
 
   if (tuck > 0) {
     const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
-    leftHip = THREE.MathUtils.lerp(leftHip, 0.82, compact);
-    rightHip = THREE.MathUtils.lerp(rightHip, 0.66, compact);
-    leftKnee = THREE.MathUtils.lerp(leftKnee, 1.05, compact);
-    rightKnee = THREE.MathUtils.lerp(rightKnee, 0.98, compact);
-    leftAnkle = THREE.MathUtils.lerp(leftAnkle, 0.28, compact);
-    rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.24, compact);
+    leftHip = THREE.MathUtils.lerp(leftHip, 0.95, compact);
+    rightHip = THREE.MathUtils.lerp(rightHip, 0.88, compact);
+    leftKnee = THREE.MathUtils.lerp(leftKnee, -1.05, compact);
+    rightKnee = THREE.MathUtils.lerp(rightKnee, -1.05, compact);
+    leftAnkle = THREE.MathUtils.lerp(leftAnkle, 0.34, compact);
+    rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.32, compact);
   }
 
   setGlbPivotAngle(pivots.leftHip, clampAngle(leftHip, glbJointLimits.hip));
@@ -1879,15 +2260,16 @@ function setGlbRelativePose(now) {
     ? 1 - state.flourishSpinRemaining / config.flourishSpinDuration
     : 0;
   const tuck = state.flourishSpinRemaining > 0 ? Math.sin(flourishProgress * Math.PI) : 0;
+  const rollTuck = state.flourishSpinRemaining > 0 ? THREE.MathUtils.smootherstep(tuck, 0, 1) : 0;
 
   const pelvis = speedLean * 0.22 - verticalLean * 0.12;
   const waist = speedLean * 0.28 - verticalLean * 0.22 + idleBreath * 0.01;
   const chest = speedLean * 0.34 - verticalLean * 0.28 + idleBreath * 0.014;
 
   setGlbPivotAngle(pivots.root, 0);
-  const pelvisWorld = clampAngle(pelvis - tuck * 0.18, glbJointLimits.torso);
-  const waistWorld = clampAngle(waist - tuck * 0.28, glbJointLimits.torso);
-  const chestWorld = clampAngle(chest - tuck * 0.36, glbJointLimits.torso);
+  const pelvisWorld = clampAngle(THREE.MathUtils.lerp(pelvis, 0.2, rollTuck), glbJointLimits.torso);
+  const waistWorld = clampAngle(THREE.MathUtils.lerp(waist, -0.06, rollTuck), glbJointLimits.torso);
+  const chestWorld = clampAngle(THREE.MathUtils.lerp(chest, -0.24, rollTuck), glbJointLimits.torso);
   setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
   setGlbPivotAngle(pivots.waist, clampAngle(waistWorld - pelvisWorld, glbJointLimits.torso));
   setGlbPivotAngle(pivots.chest, clampAngle(chestWorld - waistWorld, glbJointLimits.torso));
@@ -1975,8 +2357,8 @@ function setGlbRelativePose(now) {
 
   if (tuck > 0) {
     const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
-    leftHandTarget = { x: 0.18, y: -leftArmLength * (0.42 - compact * 0.1), bend: 1 };
-    rightHandTarget = { x: -0.18, y: -rightArmLength * (0.42 - compact * 0.1), bend: -1 };
+    leftHandTarget = { x: 0.22, y: -leftArmLength * (0.34 - compact * 0.06), bend: 1 };
+    rightHandTarget = { x: -0.22, y: -rightArmLength * (0.34 - compact * 0.06), bend: -1 };
   }
 
   const ropeAngle = Math.atan2(ropeY, ropeX);
@@ -2036,6 +2418,166 @@ function setGlbRelativePose(now) {
   setGlbPivotAngle(pivots.rightWrist, clampAngle(-rightArm.lowerWorld * 0.08, glbJointLimits.wrist));
 }
 
+function setGlbRagdollLitePose(now) {
+  const pivots = glbCharacter.pivots;
+  const idleBreath = !state.hasLaunched || state.grounded ? Math.sin(now * 3.2) : 0;
+  const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  const localVelocityX = state.velocity.x * state.facing;
+  const localVelocityY = state.velocity.y;
+  const airborne = state.hasLaunched && !state.grounded && !state.gameOver && !state.finished;
+  const hooked = state.hookActive && (state.anchor || state.hookEnd);
+  const grappling = state.grappled && state.anchor;
+  const fallAmount = THREE.MathUtils.clamp(-localVelocityY / 18, 0, 1);
+  const riseAmount = THREE.MathUtils.clamp(localVelocityY / 18, 0, 1);
+  const speedAmount = THREE.MathUtils.clamp(speed / 28, 0, 1);
+  const flourishProgress = state.flourishSpinRemaining > 0
+    ? 1 - state.flourishSpinRemaining / config.flourishSpinDuration
+    : 0;
+  const tuck = state.flourishSpinRemaining > 0 ? Math.sin(flourishProgress * Math.PI) : 0;
+  const rollTuck = state.flourishSpinRemaining > 0 ? THREE.MathUtils.smootherstep(tuck, 0, 1) : 0;
+
+  if (!airborne && !hooked) {
+    setGlbIdlePose(pivots, idleBreath, 0, idleBreath * 0.012, idleBreath * 0.018);
+    return;
+  }
+
+  const ropeTarget = hooked
+    ? (grappling ? getVisualGrapplePoint(state.anchor, scratchRopeEnd) : state.hookEnd)
+    : null;
+  let ropeDirectionWorld = ropeTarget
+    ? scratchVelocityDirection.subVectors(ropeTarget, state.player).normalize()
+    : scratchVelocityDirection.set(localVelocityX || 0.2, localVelocityY || -1, 0).normalize();
+  const shoulderWorld = characterScratchA;
+  if (hooked && ropeTarget && pivots.leftShoulder) {
+    playerMesh.updateWorldMatrix(true, true);
+    pivots.leftShoulder.getWorldPosition(shoulderWorld);
+    ropeDirectionWorld = scratchVelocityDirection.subVectors(ropeTarget, shoulderWorld);
+    if (ropeDirectionWorld.lengthSq() > 0.0001) {
+      ropeDirectionWorld.normalize();
+    } else {
+      ropeDirectionWorld.set(0.2 * state.facing, 0.98, 0).normalize();
+    }
+  }
+
+  let ropeDirectionLocal = characterScratchB.copy(ropeDirectionWorld);
+  if (hooked && ropeTarget && pivots.leftShoulder && playerAssetRoot) {
+    const localTarget = characterScratchB.copy(ropeTarget);
+    const localShoulder = characterScratchC.copy(shoulderWorld);
+    playerAssetRoot.worldToLocal(localTarget);
+    playerAssetRoot.worldToLocal(localShoulder);
+    ropeDirectionLocal = localTarget.sub(localShoulder);
+    if (ropeDirectionLocal.lengthSq() > 0.0001) {
+      ropeDirectionLocal.normalize();
+    } else {
+      ropeDirectionLocal.set(0.2, 0.98, 0).normalize();
+    }
+  } else {
+    ropeDirectionLocal.set(ropeDirectionWorld.x * state.facing, ropeDirectionWorld.y, 0).normalize();
+  }
+
+  const ropeX = ropeDirectionLocal.x;
+  const ropeY = ropeDirectionLocal.y;
+  const worldTangentX = -ropeDirectionWorld.y;
+  const worldTangentY = ropeDirectionWorld.x;
+  const tangentSpeed = state.velocity.x * worldTangentX + state.velocity.y * worldTangentY;
+  const swingFlow = hooked
+    ? clampJoint(tangentSpeed / 20, -1, 1)
+    : clampJoint(localVelocityX / 22, -1, 1);
+  const gravitySag = clampJoint(fallAmount * 0.36 - riseAmount * 0.18, -0.24, 0.46);
+  const motionLean = clampJoint(-swingFlow * 0.22 + localVelocityX * 0.008, -0.38, 0.38);
+  const tensionLean = hooked ? clampJoint(-ropeX * 0.18 + ropeY * 0.08, -0.22, 0.22) : 0;
+  const basePelvisWorld = motionLean * 0.35 + gravitySag * 0.18;
+  const baseWaistWorld = motionLean * 0.48 + gravitySag * 0.28 + tensionLean;
+  const baseChestWorld = motionLean * 0.62 + gravitySag * 0.36 + tensionLean * 1.2;
+  const pelvisWorld = clampAngle(THREE.MathUtils.lerp(basePelvisWorld, 0.2, rollTuck), glbJointLimits.torso);
+  const waistWorld = clampAngle(THREE.MathUtils.lerp(baseWaistWorld, -0.06, rollTuck), glbJointLimits.torso);
+  const chestWorld = clampAngle(THREE.MathUtils.lerp(baseChestWorld, -0.24, rollTuck), glbJointLimits.torso);
+
+  setGlbPivotAngle(pivots.root, 0);
+  setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
+  setGlbPivotAngle(pivots.waist, clampAngle(waistWorld - pelvisWorld, glbJointLimits.torso));
+  setGlbPivotAngle(pivots.chest, clampAngle(chestWorld - waistWorld, glbJointLimits.torso));
+  setGlbPivotAngle(pivots.neck, clampAngle(-chestWorld * 0.22 + gravitySag * 0.08, glbJointLimits.neck));
+  setGlbPivotAngle(pivots.head, clampAngle(-chestWorld * 0.28 + idleBreath * 0.01, glbJointLimits.neck));
+
+  const leftArmLength = localLengthTo(pivots.leftElbow) + localLengthTo(pivots.leftWrist);
+  const rightArmLength = localLengthTo(pivots.rightElbow) + localLengthTo(pivots.rightWrist);
+  let leftArm = { upperWorld: -Math.PI / 2, lowerWorld: -Math.PI / 2 };
+  if (hooked) {
+    const ropeAngle = Math.atan2(ropeY, ropeX);
+    leftArm = setGlbAlignedTwoBonePose({
+      rootPivot: pivots.leftShoulder,
+      midPivot: pivots.leftElbow,
+      endPivot: pivots.leftWrist,
+      upperName: "leftShoulder",
+      targetAngle: ropeAngle,
+      parentWorldAngle: chestWorld,
+      jointBend: 0,
+      upperLimit: glbJointLimits.loadShoulder,
+      lowerLimit: glbJointLimits.loadElbow,
+      immediate: true,
+    });
+    setGlbPivotAngle(pivots.leftWrist, clampAngle(ropeAngle - leftArm.lowerWorld, glbJointLimits.wrist), true);
+  } else {
+    leftArm = setGlbTwoBonePose({
+      rootPivot: pivots.leftShoulder,
+      midPivot: pivots.leftElbow,
+      endPivot: pivots.leftWrist,
+      upperName: "leftShoulder",
+      lowerName: "leftElbow",
+      targetX: clampJoint(THREE.MathUtils.lerp(0.08 + swingFlow * 0.16, 0.2, rollTuck), -0.28, 0.34),
+      targetY: -leftArmLength * THREE.MathUtils.lerp(0.68 + fallAmount * 0.1, 0.28, rollTuck),
+      parentWorldAngle: chestWorld,
+      bendSign: 1,
+      upperLimit: glbJointLimits.shoulder,
+      lowerLimit: glbJointLimits.elbow,
+    });
+    setGlbPivotAngle(pivots.leftWrist, clampAngle(-leftArm.lowerWorld * 0.06, glbJointLimits.wrist));
+  }
+
+  const balanceReach = Math.abs(swingFlow);
+  const rightArm = setGlbTwoBonePose({
+    rootPivot: pivots.rightShoulder,
+    midPivot: pivots.rightElbow,
+    endPivot: pivots.rightWrist,
+    upperName: "rightShoulder",
+    lowerName: "rightElbow",
+    targetX: clampJoint(THREE.MathUtils.lerp(-swingFlow * 0.42 - ropeX * 0.18, -0.2, rollTuck), -0.55, 0.45),
+    targetY: -rightArmLength * THREE.MathUtils.lerp(0.58 + fallAmount * 0.18 - balanceReach * 0.08, 0.3, rollTuck),
+    parentWorldAngle: chestWorld,
+    bendSign: -1,
+    upperLimit: glbJointLimits.shoulder,
+    lowerLimit: glbJointLimits.elbow,
+  });
+  setGlbPivotAngle(pivots.rightWrist, clampAngle(-rightArm.lowerWorld * 0.08, glbJointLimits.wrist));
+
+  let legTrail = clampJoint(-swingFlow * 0.72 + (fallAmount - riseAmount) * 0.18, -0.95, 0.95);
+  let kneeFlex = clampJoint(0.12 + speedAmount * 0.22 + fallAmount * 0.24 + Math.abs(swingFlow) * 0.16, 0.06, 0.92);
+  let leftHip = legTrail + 0.12;
+  let rightHip = legTrail - 0.14;
+  let leftKnee = -kneeFlex;
+  let rightKnee = -kneeFlex * 0.84;
+  let leftAnkle = clampJoint(-legTrail * 0.2 + kneeFlex * 0.08, -0.32, 0.32);
+  let rightAnkle = clampJoint(-legTrail * 0.16 + kneeFlex * 0.08, -0.32, 0.32);
+
+  if (tuck > 0) {
+    const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
+    leftHip = THREE.MathUtils.lerp(leftHip, 0.95, compact);
+    rightHip = THREE.MathUtils.lerp(rightHip, 0.88, compact);
+    leftKnee = THREE.MathUtils.lerp(leftKnee, -1.05, compact);
+    rightKnee = THREE.MathUtils.lerp(rightKnee, -1.05, compact);
+    leftAnkle = THREE.MathUtils.lerp(leftAnkle, 0.34, compact);
+    rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.32, compact);
+  }
+
+  setGlbPivotAngle(pivots.leftHip, clampAngle(leftHip, glbJointLimits.hip));
+  setGlbPivotAngle(pivots.rightHip, clampAngle(rightHip, glbJointLimits.hip));
+  setGlbPivotAngle(pivots.leftKnee, clampAngle(leftKnee, glbJointLimits.knee));
+  setGlbPivotAngle(pivots.rightKnee, clampAngle(rightKnee, glbJointLimits.knee));
+  setGlbPivotAngle(pivots.leftAnkle, clampAngle(leftAnkle, glbJointLimits.ankle));
+  setGlbPivotAngle(pivots.rightAnkle, clampAngle(rightAnkle, glbJointLimits.ankle));
+}
+
 function lineAngle(line, startIndex = 0, endIndex = 1) {
   const positions = line.geometry.attributes.position;
   const ax = positions.getX(startIndex);
@@ -2059,7 +2601,17 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
     return;
   }
 
-  if (config.stableGlbPose) {
+  if (config.glbPoseMode === "ragdollLite") {
+    const smoothingRate = state.hookActive || state.grappled
+      ? config.glbPoseSmoothing * 1.25
+      : config.glbPoseSmoothing * 0.9;
+    glbPoseSmoothingAlpha = 1 - Math.exp(-Math.max(dt, 0.001) * smoothingRate);
+    setGlbRagdollLitePose(now);
+    glbPoseSmoothingAlpha = 1;
+    return;
+  }
+
+  if (config.glbPoseMode === "stable" || (config.stableGlbPose && config.glbPoseMode !== "relative")) {
     resetGlbPivotAngles();
     return;
   }
@@ -2265,16 +2817,85 @@ function setFxQuality(level) {
   syncFxQualityControls();
 }
 
-function syncPixelateControls() {
+function getPixelateZoomScale() {
+  const zoomRatio = config.pixelateReferenceZoom / Math.max(camera.position.z, 0.001);
+  return THREE.MathUtils.clamp(
+    Math.pow(zoomRatio, config.pixelateZoomScalePower),
+    config.pixelateMinZoomScale,
+    config.pixelateMaxZoomScale,
+  );
+}
+
+function getEffectivePixelateIntensity() {
+  return THREE.MathUtils.clamp(pixelateSettings.intensity * getPixelateZoomScale(), 0, 1);
+}
+
+function getPixelateBlockSize(intensity = getEffectivePixelateIntensity()) {
+  let blockSize = Math.floor(THREE.MathUtils.lerp(1, config.pixelateMaxBlockSize, intensity));
+  if (blockSize > 1 && blockSize % 2 > 0) blockSize += 1;
+  return THREE.MathUtils.clamp(blockSize, 1, config.pixelateMaxBlockSize);
+}
+
+function updatePixelatePass() {
+  const effectiveIntensity = getEffectivePixelateIntensity();
+  const blockSize = getPixelateBlockSize(effectiveIntensity);
   pixelatePass.enabled = pixelateSettings.enabled;
-  pixelatePass.uniforms.intensity.value = pixelateSettings.intensity;
+  pixelatePass.uniforms.intensity.value = effectiveIntensity;
+  pixelatePass.uniforms.pixelSize.value = blockSize;
+  if (pixelateIntensityValue) {
+    pixelateIntensityValue.textContent = `${pixelateSettings.intensity.toFixed(2)} / ${blockSize}px`;
+  }
+}
+
+function syncPixelateControls() {
+  updatePixelatePass();
   if (pixelateToggleButton) {
     setIconButtonLabel(pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line");
     pixelateToggleButton.setAttribute("aria-pressed", String(pixelateSettings.enabled));
   }
   if (pixelateIntensityInput) pixelateIntensityInput.value = String(pixelateSettings.intensity);
-  if (pixelateIntensityValue) pixelateIntensityValue.textContent = pixelateSettings.intensity.toFixed(2);
   syncEditorPane();
+}
+
+function syncAudioControls() {
+  editorUi.sfxMuted = sfx.settings.sfxMuted;
+  editorUi.sfxVolume = sfx.settings.sfxVolume;
+  editorUi.musicMuted = sfx.settings.musicMuted;
+  editorUi.musicVolume = sfx.settings.musicVolume;
+
+  if (sfxMuteButton) {
+    setIconButtonLabel(sfxMuteButton, sfx.settings.sfxMuted ? "SFX off" : "SFX on", sfx.settings.sfxMuted ? "volume-x" : "volume-2");
+    sfxMuteButton.setAttribute("aria-pressed", String(sfx.settings.sfxMuted));
+  }
+  if (musicMuteButton) {
+    setIconButtonLabel(musicMuteButton, sfx.settings.musicMuted ? "Music off" : "Music on", sfx.settings.musicMuted ? "volume-x" : "music-2");
+    musicMuteButton.setAttribute("aria-pressed", String(sfx.settings.musicMuted));
+  }
+  if (sfxVolumeInput) sfxVolumeInput.value = String(sfx.settings.sfxVolume);
+  if (musicVolumeInput) musicVolumeInput.value = String(sfx.settings.musicVolume);
+  if (sfxVolumeValue) sfxVolumeValue.textContent = `${Math.round(sfx.settings.sfxVolume * 100)}%`;
+  if (musicVolumeValue) musicVolumeValue.textContent = `${Math.round(sfx.settings.musicVolume * 100)}%`;
+  syncEditorPane();
+}
+
+function setSfxMuted(muted) {
+  sfx.setSfxMuted(muted);
+  syncAudioControls();
+}
+
+function setMusicMuted(muted) {
+  sfx.setMusicMuted(muted);
+  syncAudioControls();
+}
+
+function setSfxVolume(value) {
+  sfx.setSfxVolume(value);
+  syncAudioControls();
+}
+
+function setMusicVolume(value) {
+  sfx.setMusicVolume(value);
+  syncAudioControls();
 }
 
 function syncEditorPane() {
@@ -2287,6 +2908,10 @@ function syncEditorPane() {
   editorUi.pixelate = pixelateSettings.enabled;
   editorUi.pixelateIntensity = pixelateSettings.intensity;
   editorUi.fxQuality = fxQualitySettings.level;
+  editorUi.sfxMuted = sfx.settings.sfxMuted;
+  editorUi.sfxVolume = sfx.settings.sfxVolume;
+  editorUi.musicMuted = sfx.settings.musicMuted;
+  editorUi.musicVolume = sfx.settings.musicVolume;
 
   syncingEditorPane = true;
   for (const binding of tweakPaneBindings) binding.refresh?.();
@@ -2409,6 +3034,24 @@ async function initializeEditorPane() {
       },
     },
     (value) => setFxQuality(value),
+  );
+
+  const audioFolder = tweakPane.addFolder({ title: "Audio" });
+  addTweakBinding(audioFolder, editorUi, "sfxMuted", { label: "Mute SFX" }, (value) => setSfxMuted(value));
+  addTweakBinding(
+    audioFolder,
+    editorUi,
+    "sfxVolume",
+    { label: "SFX volume", min: 0, max: 1, step: 0.01 },
+    (value) => setSfxVolume(value),
+  );
+  addTweakBinding(audioFolder, editorUi, "musicMuted", { label: "Mute music" }, (value) => setMusicMuted(value));
+  addTweakBinding(
+    audioFolder,
+    editorUi,
+    "musicVolume",
+    { label: "Music volume", min: 0, max: 1, step: 0.01 },
+    (value) => setMusicVolume(value),
   );
 
   syncEditorPane();
@@ -3167,14 +3810,41 @@ const slowMotionRingGlowMaterial = new THREE.MeshBasicMaterial({
   blending: THREE.AdditiveBlending,
 });
 const startBlockMaterial = new THREE.MeshStandardMaterial({
-  color: 0x253633,
-  emissive: 0x07100f,
-  roughness: 0.74,
+  color: 0x14211f,
+  emissive: 0x030807,
+  roughness: 0.82,
 });
 const startBlockEdgeMaterial = new THREE.MeshBasicMaterial({
   color: 0x77dbc5,
   transparent: true,
   opacity: 0.32,
+  depthWrite: false,
+});
+const startPipeMaterial = new THREE.MeshStandardMaterial({
+  color: 0x263f3b,
+  emissive: 0x050d0c,
+  roughness: 0.7,
+});
+const startPipeDarkMaterial = new THREE.MeshBasicMaterial({
+  color: 0x091311,
+  transparent: true,
+  opacity: 0.86,
+});
+const startPipeHighlightMaterial = new THREE.MeshBasicMaterial({
+  color: 0x4ca493,
+  transparent: true,
+  opacity: 0.58,
+  depthWrite: false,
+});
+const startValveMaterial = new THREE.MeshBasicMaterial({
+  color: 0xa55b36,
+  transparent: true,
+  opacity: 0.72,
+});
+const startSteamMaterial = new THREE.MeshBasicMaterial({
+  color: 0xbdd1c8,
+  transparent: true,
+  opacity: 0.18,
   depthWrite: false,
 });
 const finishBuildingMaterial = new THREE.MeshBasicMaterial({
@@ -3245,23 +3915,50 @@ function setDroneState(anchor, nextState) {
   }
 }
 
-function triggerDroneMalfunction(anchor) {
-  if (!anchor || anchor.visualType !== "drone" || anchor.malfunctioning) return;
+function isMalfunctionVehicleAnchor(anchor) {
+  return anchor?.visualType === "drone" || anchor?.visualType === "policeCar";
+}
+
+function isAnchorBehindPlayer(anchor, player = state.player) {
+  return Boolean(anchor && anchor.position.x < player.x - config.anchorMalfunctionBehindMargin);
+}
+
+function triggerVehicleMalfunction(anchor) {
+  if (!isMalfunctionVehicleAnchor(anchor) || anchor.malfunctioning) return;
+  sfx.play("malfunction");
   anchor.malfunctioning = true;
   anchor.used = true;
   anchor.hitMesh.visible = false;
-  anchor.malfunctionSide = Math.random() < 0.5 ? -1 : 1;
-  anchor.malfunctionVelocity.set(
-    anchor.malfunctionSide * (0.8 + Math.random() * 1.8),
-    0.7 + Math.random() * 1.6,
-    0,
-  );
-  anchor.malfunctionSpin = anchor.malfunctionSide * (2.8 + Math.random() * 3.8);
-  anchor.blownRotor = anchor.rotors[Math.floor(Math.random() * anchor.rotors.length)] ?? null;
-  if (anchor.blownRotor) anchor.blownRotor.visible = false;
+
+  if (anchor.visualType === "policeCar") {
+    anchor.blownThruster = anchor.thrusters[Math.floor(Math.random() * anchor.thrusters.length)] ?? null;
+    anchor.malfunctionSide = anchor.blownThruster?.side ?? (Math.random() < 0.5 ? -1 : 1);
+    anchor.malfunctionVelocity.set(
+      anchor.malfunctionSide * (0.25 + Math.random() * 1.1),
+      0.25 + Math.random() * 0.9,
+      0,
+    );
+    anchor.malfunctionSpin = -anchor.malfunctionSide * (1.8 + Math.random() * 2.4);
+    if (anchor.blownThruster) {
+      anchor.blownThruster.glow.material.color.setHex(0xff2b1c);
+      anchor.blownThruster.flame.material.color.setHex(0xff2b1c);
+      anchor.blownThruster.hot.material.color.setHex(0xffd34a);
+    }
+  } else {
+    anchor.malfunctionSide = Math.random() < 0.5 ? -1 : 1;
+    anchor.malfunctionVelocity.set(
+      anchor.malfunctionSide * (0.8 + Math.random() * 1.8),
+      0.7 + Math.random() * 1.6,
+      0,
+    );
+    anchor.malfunctionSpin = anchor.malfunctionSide * (2.8 + Math.random() * 3.8);
+    anchor.blownRotor = anchor.rotors[Math.floor(Math.random() * anchor.rotors.length)] ?? null;
+    if (anchor.blownRotor) anchor.blownRotor.visible = false;
+  }
+
   setDroneState(anchor, DroneState.DISABLED);
   for (let index = 0; index < 14; index += 1) {
-    spawnDroneMalfunctionSpark(anchor, performance.now() / 1000);
+    spawnVehicleMalfunctionSpark(anchor, performance.now() / 1000);
   }
 }
 
@@ -3357,7 +4054,7 @@ function createPoliceHoverCarVisual() {
   const grayMaterial = new THREE.MeshBasicMaterial({ color: 0x55595b });
   const blueMaterial = new THREE.MeshBasicMaterial({ color: 0x1262ff, transparent: true, opacity: 1, depthWrite: false });
   const redMaterial = new THREE.MeshBasicMaterial({ color: 0xff2b1c, transparent: true, opacity: 1, depthWrite: false });
-  const cyanMaterial = new THREE.MeshBasicMaterial({ color: 0x36f6ff });
+  const cyanMaterial = new THREE.MeshBasicMaterial({ color: 0x36f6ff, transparent: true, opacity: 1, depthWrite: false });
   const flameMaterial = new THREE.MeshBasicMaterial({ color: 0xff9a1f, transparent: true, opacity: 1, depthWrite: false });
   const hotFlameMaterial = new THREE.MeshBasicMaterial({ color: 0xffff55, transparent: true, opacity: 1, depthWrite: false });
   const smokeMaterial = new THREE.MeshBasicMaterial({ color: 0x9aa0a2, transparent: true, opacity: 0, depthWrite: false });
@@ -3373,12 +4070,12 @@ function createPoliceHoverCarVisual() {
   const centerBar = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 0.18), grayMaterial);
   const leftThruster = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.12), blackMaterial);
   const rightThruster = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.12), blackMaterial);
-  const leftGlowJet = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.1), cyanMaterial);
-  const rightGlowJet = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.1), cyanMaterial);
-  const leftFlame = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.42, 4), flameMaterial);
-  const rightFlame = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.42, 4), flameMaterial);
-  const leftHot = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.26, 4), hotFlameMaterial);
-  const rightHot = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.26, 4), hotFlameMaterial);
+  const leftGlowJet = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.1), cyanMaterial.clone());
+  const rightGlowJet = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.1), cyanMaterial.clone());
+  const leftFlame = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.42, 4), flameMaterial.clone());
+  const rightFlame = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.42, 4), flameMaterial.clone());
+  const leftHot = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.26, 4), hotFlameMaterial.clone());
+  const rightHot = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.26, 4), hotFlameMaterial.clone());
   const leftSmoke = new THREE.Mesh(new THREE.CircleGeometry(0.12, 8), smokeMaterial.clone());
   const rightSmoke = new THREE.Mesh(new THREE.CircleGeometry(0.12, 8), smokeMaterial.clone());
 
@@ -3456,11 +4153,17 @@ function createPoliceHoverCarVisual() {
   group.add(leftGlow, rightGlow);
 
   group.renderOrder = 15;
+  const thrusters = [
+    { side: -1, body: leftThruster, glow: leftGlowJet, flame: leftFlame, hot: leftHot, smoke: leftSmoke },
+    { side: 1, body: rightThruster, glow: rightGlowJet, flame: rightFlame, hot: rightHot, smoke: rightSmoke },
+  ];
   return {
     group,
     lights: [leftLight, rightLight],
     lightGlows: [leftGlow, rightGlow],
     rotors: [],
+    thrusters,
+    blownThruster: null,
     sirens: { red: redBar, blue: blueBar },
     flames: [leftFlame, rightFlame, leftHot, rightHot],
     smokes: [leftSmoke, rightSmoke],
@@ -3601,6 +4304,8 @@ function addAnchor(x, y) {
     lightGlows: drone.lightGlows,
     rotors: drone.rotors,
     blownRotor: drone.blownRotor ?? null,
+    thrusters: drone.thrusters ?? [],
+    blownThruster: drone.blownThruster ?? null,
     sirens: drone.sirens ?? null,
     flames: drone.flames ?? [],
     smokes: drone.smokes ?? [],
@@ -3719,6 +4424,9 @@ function addScore(amount, actionType = "", now = performance.now() / 1000) {
   updateMultiplier(actionType, now);
   state.scoreFloat += amount * state.multiplier;
   syncScore();
+  if (actionType === "score-ring") sfx.play("ring");
+  if (actionType === "slow-ring") sfx.play("slowMo");
+  if (actionType === "finish") sfx.play("finish");
 }
 
 function updateSpeedScore(dt, now) {
@@ -3737,27 +4445,138 @@ function updateSpeedScore(dt, now) {
 
 function moveStartBlock(x, y) {
   if (!startBlock || !startPlatform) return;
-  const blockTop = y + 2.5;
-  startBlock.block.position.set(x - 1.8, blockTop - startBlock.blockHeight * 0.5, -0.05);
-  startBlock.edge.position.set(x - 0.51, blockTop - startBlock.blockHeight * 0.5, 0.02);
-  startBlock.ledge.position.set(x, y, 0.03);
+  const blockTop = y;
+  const blockCenterX = x - startBlock.blockWidth * 0.5;
+  const blockCenterY = blockTop - startBlock.blockHeight * 0.5;
+  startBlock.block.position.set(blockCenterX, blockCenterY, -0.05);
+  if (startBlock.pipeGroup) startBlock.pipeGroup.position.set(blockCenterX, blockCenterY, 0.01);
+  startBlock.edge.position.set(x + 0.04, blockCenterY, 0.02);
+  startBlock.ledge.position.set(x - 0.35, blockTop, 0.03);
   startPlatform.x = x;
   startPlatform.y = y;
 }
 
 function addStartBlock(x = -2.25, y = 6.35) {
+  const blockWidth = 2.5;
   const blockHeight = 26;
-  const block = new THREE.Mesh(new THREE.BoxGeometry(2.5, blockHeight, 1.2), startBlockMaterial);
+  const block = new THREE.Mesh(new THREE.BoxGeometry(blockWidth, blockHeight, 1.2), startBlockMaterial);
   addGameplay(block);
+
+  const pipeGroup = new THREE.Group();
+  pipeGroup.name = "start_steam_stacks";
+  pipeGroup.renderOrder = 2;
+  addGameplay(pipeGroup);
+
+  const addBox = (width, height, depth, material, px, py, pz = 0.6) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+    mesh.position.set(px, py, pz);
+    pipeGroup.add(mesh);
+    return mesh;
+  };
+
+  const addPipe = (px, height, radius, py = 0, material = startPipeMaterial) => {
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, height, 8), material);
+    pipe.position.set(px, py, 0.63);
+    pipeGroup.add(pipe);
+    return pipe;
+  };
+
+  addBox(2.08, blockHeight - 1.3, 0.22, startPipeDarkMaterial, -0.08, -0.34, 0.55);
+  addPipe(-0.92, blockHeight - 0.9, 0.1);
+  addPipe(-0.45, blockHeight - 2.6, 0.075);
+  addPipe(0.18, blockHeight - 1.8, 0.085);
+  addPipe(0.72, blockHeight - 4.2, 0.065);
+
+  for (let bandY = -10.7; bandY <= 10.7; bandY += 3.1) {
+    addBox(2.0, 0.08, 0.08, startPipeHighlightMaterial, -0.08, bandY, 0.72);
+  }
+
+  for (const pipe of [
+    { x: -0.32, y: 6.7, width: 1.2 },
+    { x: 0.08, y: 2.15, width: 1.72 },
+    { x: -0.28, y: -5.65, width: 1.48 },
+  ]) {
+    const crossPipe = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, pipe.width, 8), startPipeMaterial);
+    crossPipe.position.set(pipe.x, pipe.y, 0.68);
+    crossPipe.rotation.z = Math.PI / 2;
+    pipeGroup.add(crossPipe);
+  }
+
+  for (const valve of [
+    { x: -0.98, y: 4.9, scale: 1 },
+    { x: 0.52, y: -2.1, scale: 0.82 },
+  ]) {
+    const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.2 * valve.scale, 0.028, 6, 12), startValveMaterial);
+    wheel.position.set(valve.x, valve.y, 0.82);
+    pipeGroup.add(wheel);
+    addBox(0.06, 0.44 * valve.scale, 0.05, startValveMaterial, valve.x, valve.y, 0.84);
+    addBox(0.44 * valve.scale, 0.06, 0.05, startValveMaterial, valve.x, valve.y, 0.84);
+  }
+
+  const steamVents = [];
+  for (const stack of [
+    { x: -0.92, y: 13.08, h: 1.05, r: 0.12 },
+    { x: -0.24, y: 13.18, h: 0.82, r: 0.1 },
+    { x: 0.52, y: 12.98, h: 1.22, r: 0.11 },
+  ]) {
+    const chimney = new THREE.Mesh(new THREE.CylinderGeometry(stack.r, stack.r, stack.h, 8), startPipeMaterial);
+    chimney.position.set(stack.x, stack.y + stack.h * 0.5, 0.66);
+    pipeGroup.add(chimney);
+    addBox(stack.r * 3.2, 0.1, 0.2, startPipeHighlightMaterial, stack.x, stack.y + stack.h + 0.04, 0.75);
+    steamVents.push(new THREE.Vector3(stack.x, stack.y + stack.h + 0.08, 0.82));
+  }
 
   const edge = new THREE.Mesh(new THREE.BoxGeometry(0.08, blockHeight, 1.28), startBlockEdgeMaterial);
   addGameplay(edge);
 
-  const ledge = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.12, 1.25), startBlockEdgeMaterial);
+  const ledge = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.12, 1.25), startBlockEdgeMaterial);
   addGameplay(ledge);
-  startPlatform = addPlatform(x, y, 1.0);
-  startBlock = { block, edge, ledge, blockHeight };
+
+  const smokePuffs = [];
+  const smokeGeometry = new THREE.CircleGeometry(0.32, 8);
+  for (let index = 0; index < 24; index += 1) {
+    const material = startSteamMaterial.clone();
+    const puff = new THREE.Mesh(smokeGeometry, material);
+    puff.renderOrder = 3;
+    pipeGroup.add(puff);
+    smokePuffs.push({
+      mesh: puff,
+      ventIndex: index % steamVents.length,
+      seed: index / 24,
+      speed: 0.12 + (index % 5) * 0.014,
+      drift: (index % 2 === 0 ? -1 : 1) * (0.12 + (index % 7) * 0.018),
+      size: 0.12 + (index % 4) * 0.035,
+    });
+  }
+
+  startPlatform = addPlatform(x, y, 1.35);
+  startBlock = { block, edge, ledge, blockWidth, blockHeight, pipeGroup, smokePuffs, steamVents };
   moveStartBlock(x, y);
+}
+
+function updateStartSteam(dt, now) {
+  if (!startBlock?.smokePuffs?.length || !startBlock.steamVents?.length) return;
+
+  const snap = 36;
+  const gust = Math.sin(now * 0.37) * 0.08;
+  for (const puff of startBlock.smokePuffs) {
+    const progressRaw = now * puff.speed + puff.seed;
+    const progress = progressRaw - Math.floor(progressRaw);
+    const vent = startBlock.steamVents[puff.ventIndex];
+    const pixelJitter = Math.floor((now * 9 + puff.seed * 17) % 3) - 1;
+    const wobble = Math.sin((progress + puff.seed) * Math.PI * 4) * 0.08;
+    const x = vent.x + (puff.drift + gust) * progress + wobble + pixelJitter * 0.018;
+    const y = vent.y + progress * (1.4 + puff.size * 2.4);
+    const scale = 0.34 + progress * (0.72 + puff.size);
+    puff.mesh.position.set(
+      Math.round(x * snap) / snap,
+      Math.round(y * snap) / snap,
+      vent.z + progress * 0.02,
+    );
+    puff.mesh.scale.set(scale * (1.0 + puff.size), scale * 0.82, 1);
+    puff.mesh.rotation.z = puff.seed * Math.PI * 2 + progress * 0.3;
+    puff.mesh.material.opacity = Math.pow(1 - progress, 1.65) * 0.24;
+  }
 }
 
 function addFinishBuilding() {
@@ -4204,6 +5023,7 @@ function fitBuildViewToStage() {
 }
 
 function startPointerControl(event) {
+  sfx.unlock();
   if (state.paused) {
     startEditorDrag(event);
     return;
@@ -4361,8 +5181,29 @@ function reset({ resetLevelStats = false } = {}) {
     anchor.malfunctionVelocity.set(0, 0, 0);
     anchor.malfunctionSpin = 0;
     anchor.blownRotor = null;
+    anchor.blownThruster = null;
     anchor.hitMesh.visible = true;
     for (const rotor of anchor.rotors) rotor.visible = true;
+    for (const thruster of anchor.thrusters) {
+      thruster.body.visible = true;
+      thruster.glow.visible = true;
+      thruster.flame.visible = true;
+      thruster.hot.visible = true;
+      thruster.glow.material.color.setHex(0x36f6ff);
+      thruster.glow.material.opacity = 1;
+      thruster.glow.scale.set(1, 1, 1);
+      thruster.flame.material.color.setHex(0xff9a1f);
+      thruster.flame.material.opacity = 1;
+      thruster.flame.scale.set(1, 1, 1);
+      thruster.hot.material.color.setHex(0xffff55);
+      thruster.hot.material.opacity = 1;
+      thruster.hot.scale.set(1, 1, 1);
+      if (thruster.smoke) {
+        thruster.smoke.visible = false;
+        thruster.smoke.material.opacity = 0;
+        thruster.smoke.scale.setScalar(1);
+      }
+    }
     anchor.mesh.position.copy(anchor.position);
     anchor.mesh.rotation.set(0, 0, 0);
     anchor.debugAnchor.visible = config.debugShowDroneAnchors;
@@ -4439,6 +5280,8 @@ function decorateControls() {
     [savePoseButton, "Save pose", "save"],
     [resetPoseButton, "Reset pose", "rotate-ccw"],
     [pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line"],
+    [sfxMuteButton, sfx.settings.sfxMuted ? "SFX off" : "SFX on", sfx.settings.sfxMuted ? "volume-x" : "volume-2"],
+    [musicMuteButton, sfx.settings.musicMuted ? "Music off" : "Music on", sfx.settings.musicMuted ? "volume-x" : "music-2"],
     [resetAnchorsButton, "Reset layout", "map"],
   ];
 
@@ -4569,6 +5412,69 @@ function distanceFromSegmentToPoint(start, end, point) {
   return Math.hypot(point.x - closestX, point.y - closestY);
 }
 
+function getVisiblePlayBounds(margin = 0) {
+  const visibleHalfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * camera.position.z;
+  const visibleHalfWidth = visibleHalfHeight * camera.aspect;
+  return {
+    left: camera.position.x - visibleHalfWidth - margin,
+    right: camera.position.x + visibleHalfWidth + margin,
+    bottom: camera.position.y - visibleHalfHeight - margin,
+    top: camera.position.y + visibleHalfHeight + margin,
+  };
+}
+
+function isWorldPointOnScreen(point, margin = 0) {
+  const bounds = getVisiblePlayBounds(margin);
+  return (
+    point.x >= bounds.left &&
+    point.x <= bounds.right &&
+    point.y >= bounds.bottom &&
+    point.y <= bounds.top
+  );
+}
+
+function isAnchorTargetable(anchor) {
+  return Boolean(
+    anchor &&
+    !anchor.malfunctioning &&
+    anchor.droneState !== DroneState.DISABLED &&
+    anchor.hitMesh?.visible !== false
+  );
+}
+
+function isDownwardAnchorTargetAllowed(anchor, player = state.player) {
+  if (anchor.position.y >= player.y - config.downwardTargetMinDelta) return true;
+  return isWorldPointOnScreen(anchor.position, config.downwardTargetScreenMargin);
+}
+
+function hasVisibleTargetableAnchorBelow(player = state.player) {
+  for (const anchor of anchors) {
+    if (!isAnchorTargetable(anchor)) continue;
+    if (anchor.position.y >= player.y - config.downwardTargetMinDelta) continue;
+    if (!isWorldPointOnScreen(anchor.position, config.downwardTargetScreenMargin)) continue;
+    if (player.distanceTo(anchor.position) <= config.grappleRange) return true;
+  }
+  return false;
+}
+
+function setFallbackAimDirection(origin = state.player) {
+  const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  if (speed > 0.2) {
+    state.aimDirection.set(state.velocity.x / speed, state.velocity.y / speed, 0).normalize();
+  } else {
+    state.aimDirection.set(state.facing || 1, 0.35, 0).normalize();
+  }
+
+  if (state.aimDirection.y < 0 && !hasVisibleTargetableAnchorBelow()) {
+    const horizontal = Math.abs(state.aimDirection.x) > 0.05
+      ? state.aimDirection.x
+      : state.facing || 1;
+    state.aimDirection.set(horizontal, config.fallbackAimUpwardBias, 0).normalize();
+  }
+
+  state.aimEnd.copy(origin).addScaledVector(state.aimDirection, config.aimLength);
+}
+
 function startCrashExplosion(now) {
   state.crashExploding = true;
   state.crashExplosionStartedAt = now;
@@ -4609,6 +5515,7 @@ function updateCrashExplosion(dt, now) {
 
 function crash(now) {
   if (state.gameOver) return;
+  sfx.play("crash");
   state.deaths += 1;
   state.gameOver = true;
   releaseGrapple();
@@ -4633,9 +5540,10 @@ function findAnchorFor(player, velocity, lastReleasedAnchor) {
     Math.abs(velocity.x) < config.regrabSameAnchorHorizontalSpeed;
 
   for (const anchor of anchors) {
-    if (anchor.malfunctioning || anchor.droneState === DroneState.DISABLED) continue;
+    if (!isAnchorTargetable(anchor)) continue;
     const dx = anchor.position.x - player.x;
     const dy = anchor.position.y - player.y;
+    if (dy < -config.downwardTargetMinDelta && !isDownwardAnchorTargetAllowed(anchor, player)) continue;
 
     const distance = Math.hypot(dx, dy);
     if (distance > config.grappleRange) continue;
@@ -4670,7 +5578,8 @@ function findGuideAnchor() {
   let bestDistance = Infinity;
 
   for (const anchor of anchors) {
-    if (anchor.malfunctioning || anchor.droneState === DroneState.DISABLED) continue;
+    if (!isAnchorTargetable(anchor)) continue;
+    if (!isDownwardAnchorTargetAllowed(anchor)) continue;
     const distance = state.player.distanceTo(anchor.position);
     if (distance > config.grappleRange) continue;
 
@@ -4685,7 +5594,7 @@ function findGuideAnchor() {
 
 function hasAvailableAnchorInReach() {
   for (const anchor of anchors) {
-    if (anchor.malfunctioning || anchor.droneState === DroneState.DISABLED) continue;
+    if (!isAnchorTargetable(anchor)) continue;
     if (state.player.distanceTo(anchor.position) <= config.grappleRange) return true;
   }
   return false;
@@ -4695,14 +5604,15 @@ function findHookHit() {
   let best = null;
   let bestDistance = Infinity;
 
-  if (state.anchor) {
+  if (isAnchorTargetable(state.anchor) && isDownwardAnchorTargetAllowed(state.anchor)) {
     const targetDistance = state.hookEnd.distanceTo(state.anchor.position);
     const targetPathDistance = distanceFromSegmentToPoint(state.previousHookEnd, state.hookEnd, state.anchor.position);
     if (Math.min(targetDistance, targetPathDistance) < config.hookHitRadius) return state.anchor;
   }
 
   for (const anchor of anchors) {
-    if (anchor.malfunctioning || anchor.droneState === DroneState.DISABLED) continue;
+    if (!isAnchorTargetable(anchor)) continue;
+    if (!isDownwardAnchorTargetAllowed(anchor)) continue;
     const playerDistance = state.player.distanceTo(anchor.position);
     if (playerDistance > config.maxRopeLength + 0.75) continue;
 
@@ -4728,6 +5638,7 @@ function syncFailedGrappleChainGeometry() {
 }
 
 function startFailedGrapple(origin) {
+  sfx.play("hookShot");
   state.hookActive = true;
   state.failedGrappleActive = true;
   state.failedGrappleAge = 0;
@@ -4770,9 +5681,17 @@ function startFailedGrapple(origin) {
   hookHead.visible = true;
 }
 
+function setFacingTowardX(targetX, deadZone = 0.28) {
+  if (!Number.isFinite(targetX)) return;
+  const dx = targetX - state.player.x;
+  if (Math.abs(dx) > deadZone) state.facing = dx >= 0 ? 1 : -1;
+}
+
 function attachAnchor(anchor) {
+  sfx.play("hookCatch", Math.hypot(state.velocity.x, state.velocity.y));
   state.anchor = anchor;
   state.grappled = true;
+  setFacingTowardX(anchor.position.x);
   state.hookWrapPulse = 1;
   state.ropeLength = Math.max(
     config.minRopeLength,
@@ -4805,8 +5724,16 @@ function startGrapple(anchorOverride = null) {
     state.hasLaunched = true;
     state.velocity.copy(state.launchVelocity);
   }
-  const anchor = anchorOverride ?? findAnchor();
+  const overrideAnchor = isAnchorTargetable(anchorOverride) && isDownwardAnchorTargetAllowed(anchorOverride)
+    ? anchorOverride
+    : null;
+  const anchor = overrideAnchor ?? findAnchor();
   const origin = getRopeOrigin();
+  if (anchor) {
+    state.aimDirection.subVectors(anchor.position, origin).normalize();
+  } else {
+    setFallbackAimDirection(origin);
+  }
   const missedWhileFalling =
     !anchor &&
     state.hasLaunched &&
@@ -4818,6 +5745,7 @@ function startGrapple(anchorOverride = null) {
     return;
   }
 
+  sfx.play("hookShot");
   state.hookActive = true;
   state.failedGrappleActive = false;
   state.failedGrappleAge = 0;
@@ -4825,7 +5753,7 @@ function startGrapple(anchorOverride = null) {
   state.grappled = false;
   state.ropeLength = config.minRopeLength;
   if (anchor) {
-    state.aimDirection.subVectors(anchor.position, origin).normalize();
+    setFacingTowardX(anchor.position.x);
   }
   state.hookEnd.copy(origin).addScaledVector(state.aimDirection, config.minRopeLength);
   state.previousHookEnd.copy(origin);
@@ -4851,6 +5779,7 @@ function jumpFromPlatform() {
   const platform = getStandingPlatform();
   if (!platform && state.hasLaunched) return false;
 
+  sfx.play("jump");
   state.hasLaunched = true;
   state.grounded = false;
   state.velocity.set(config.platformJumpForward, config.platformJumpLift, 0);
@@ -4889,8 +5818,12 @@ function releaseGrapple({ pop = false } = {}) {
   if (hadAnchor) state.lastReleasedAnchor = releasedAnchor;
   if (state.anchor) {
     state.anchor.releasedAt = performance.now() / 1000;
-    if (state.anchor.visualType === "drone" && Math.random() < config.droneMalfunctionChance) {
-      triggerDroneMalfunction(state.anchor);
+    if (
+      isMalfunctionVehicleAnchor(state.anchor) &&
+      isAnchorBehindPlayer(state.anchor) &&
+      Math.random() < config.droneMalfunctionChance
+    ) {
+      triggerVehicleMalfunction(state.anchor);
     } else {
       setDroneState(state.anchor, DroneState.RELEASED);
     }
@@ -4916,6 +5849,7 @@ function releaseGrapple({ pop = false } = {}) {
   }
 
   if (hadAnchor && pop && !state.gameOver) {
+    sfx.play("release");
     state.velocity.copy(getReleasePopVelocity(releasedAnchor));
   }
 }
@@ -4935,6 +5869,7 @@ function canFlourish(now) {
 function flourish(now) {
   if (!canFlourish(now)) return;
   if (state.flourishSpinRemaining > 0) return;
+  sfx.play("flourish");
   releaseGrapple();
   state.velocity.x += config.flourishBoost;
   state.velocity.y += config.flourishLift;
@@ -5235,7 +6170,8 @@ function updateCourse(now, dt) {
 }
 
 function updateDroneVisuals(now, dt) {
-  const targetedAnchor = state.grappled ? state.anchor : state.hookActive ? state.anchor : findGuideAnchor();
+  const activeAnchor = isAnchorTargetable(state.anchor) ? state.anchor : null;
+  const targetedAnchor = state.grappled ? activeAnchor : state.hookActive ? activeAnchor : findGuideAnchor();
 
   for (const anchor of anchors) {
     if (anchor.malfunctioning) {
@@ -5282,12 +6218,24 @@ function updateDroneVisuals(now, dt) {
     );
 
     const tilt = THREE.MathUtils.clamp((anchor.visualOffset.x + anchor.impactOffset.x) * -0.9, -0.22, 0.22);
-    anchor.mesh.rotation.z = anchor.malfunctioning
-      ? anchor.mesh.rotation.z + anchor.malfunctionSpin * dt
-      : tilt + Math.sin(now * 1.8 + anchor.index) * 0.025;
-    anchor.mesh.rotation.y = anchor.malfunctioning
-      ? Math.sin(now * 7.2 + anchor.index) * 0.28
-      : Math.sin(now * 1.3 + anchor.index) * 0.08;
+    if (anchor.malfunctioning && anchor.visualType === "policeCar") {
+      const fallTilt = -anchor.malfunctionSide * (
+        0.72 + Math.min(0.62, Math.max(0, -anchor.visualOffset.y) * 0.035)
+      );
+      const tiltAlpha = 1 - Math.exp(-dt * 5.5);
+      anchor.mesh.rotation.z = normalizeAngle(
+        anchor.mesh.rotation.z + normalizeAngle(fallTilt - anchor.mesh.rotation.z) * tiltAlpha,
+      );
+      anchor.mesh.rotation.z += anchor.malfunctionSpin * dt * 0.22;
+      anchor.mesh.rotation.y = Math.sin(now * 8.4 + anchor.index) * 0.16;
+    } else {
+      anchor.mesh.rotation.z = anchor.malfunctioning
+        ? anchor.mesh.rotation.z + anchor.malfunctionSpin * dt
+        : tilt + Math.sin(now * 1.8 + anchor.index) * 0.025;
+      anchor.mesh.rotation.y = anchor.malfunctioning
+        ? Math.sin(now * 7.2 + anchor.index) * 0.28
+        : Math.sin(now * 1.3 + anchor.index) * 0.08;
+    }
     const stateScale =
       anchor.droneState === DroneState.TARGETED ? 1.1 : anchor.droneState === DroneState.GRAPPLED ? 1.14 : 1;
     const currentScale = anchor.mesh.scale.x + (stateScale - anchor.mesh.scale.x) * 0.12;
@@ -5301,7 +6249,7 @@ function updateDroneVisuals(now, dt) {
       rotor.rotation.z = now * rotorSpeed * (rotor.position.x < 0 ? -1 : 1);
     }
     if ((anchor.droneState === DroneState.GRAPPLED || anchor.malfunctioning) && Math.random() < dt * config.droneMalfunctionSparkChance) {
-      spawnDroneMalfunctionSpark(anchor, now);
+      spawnVehicleMalfunctionSpark(anchor, now);
     }
     updatePoliceCarEffects(anchor, now);
 
@@ -5328,6 +6276,59 @@ function updatePoliceCarEffects(anchor, now) {
     anchor.sirens.blue.scale.setScalar(sirenPhase === 1 ? 1.12 : 0.96);
   }
 
+  if (anchor.malfunctioning && anchor.visualType === "policeCar") {
+    const failedThruster = anchor.blownThruster;
+    const sparkPulse = Math.sin(now * 34 + anchor.visualSeed) > -0.15;
+    const burst = 0.5 + 0.5 * Math.sin(now * 41 + anchor.visualSeed * 1.7);
+    if (anchor.sirens) {
+      anchor.sirens.red.material.opacity = sparkPulse ? 0.92 : 0.24;
+      anchor.sirens.blue.material.opacity = 0.18;
+      anchor.sirens.red.scale.setScalar(sparkPulse ? 1.18 : 0.9);
+      anchor.sirens.blue.scale.setScalar(0.82);
+    }
+    for (const thruster of anchor.thrusters) {
+      const failed = thruster === failedThruster;
+      if (failed) {
+        thruster.body.visible = true;
+        thruster.glow.visible = true;
+        thruster.glow.material.color.setHex(sparkPulse ? 0xff2b1c : 0xffd34a);
+        thruster.glow.material.opacity = 0.68 + burst * 0.32;
+        thruster.glow.scale.set(1.1 + burst * 0.55, 1.0 + burst * 0.42, 1);
+        thruster.flame.visible = true;
+        thruster.hot.visible = sparkPulse;
+        thruster.flame.material.color.setHex(sparkPulse ? 0xff2b1c : 0xff8d24);
+        thruster.hot.material.color.setHex(0xffe65a);
+        thruster.flame.material.opacity = sparkPulse ? 1 : 0.42;
+        thruster.hot.material.opacity = sparkPulse ? 0.95 : 0.3;
+        thruster.flame.scale.set(1.0 + burst * 0.8, 0.75 + burst * 0.65, 1);
+        thruster.hot.scale.set(0.8 + burst * 0.5, 0.7 + burst * 0.5, 1);
+        if (thruster.smoke) {
+          thruster.smoke.visible = true;
+          thruster.smoke.material.opacity = 0.28 + burst * 0.22;
+          thruster.smoke.position.y = -0.72 + Math.sin(now * 9 + anchor.visualSeed) * 0.06;
+          thruster.smoke.scale.setScalar(1.0 + burst * 0.85);
+        }
+      } else {
+        thruster.body.visible = true;
+        thruster.glow.visible = true;
+        thruster.glow.material.color.setHex(0x36f6ff);
+        thruster.glow.material.opacity = 0.72;
+        thruster.glow.scale.set(0.9, 0.88, 1);
+        thruster.flame.visible = true;
+        thruster.hot.visible = true;
+        thruster.flame.material.color.setHex(0xff9a1f);
+        thruster.hot.material.color.setHex(0xffff55);
+        thruster.flame.material.opacity = 0.75;
+        thruster.hot.material.opacity = 0.72;
+        if (thruster.smoke) {
+          thruster.smoke.visible = false;
+          thruster.smoke.material.opacity = 0;
+        }
+      }
+    }
+    return;
+  }
+
   if (now >= anchor.nextSputterAt) {
     const randomish = Math.sin((anchor.visualSeed + now * 12.9898) * 78.233) * 43758.5453;
     const amount = randomish - Math.floor(randomish);
@@ -5352,20 +6353,17 @@ function updatePoliceCarEffects(anchor, now) {
 }
 
 function updateAimIndicator() {
-  const anchor = state.hookActive ? state.anchor : findGuideAnchor();
+  const activeAnchor = isAnchorTargetable(state.anchor) && isDownwardAnchorTargetAllowed(state.anchor)
+    ? state.anchor
+    : null;
+  const anchor = state.hookActive ? activeAnchor : findGuideAnchor();
   const origin = getRopeOrigin();
 
   if (anchor) {
     state.aimEnd.copy(anchor.position);
     state.aimDirection.subVectors(anchor.position, origin).normalize();
   } else {
-    const speed = Math.hypot(state.velocity.x, state.velocity.y);
-    if (speed > 0.2) {
-      state.aimDirection.set(state.velocity.x / speed, state.velocity.y / speed, 0).normalize();
-    } else {
-      state.aimDirection.set(1, 0.35, 0).normalize();
-    }
-    state.aimEnd.copy(origin).addScaledVector(state.aimDirection, config.aimLength);
+    setFallbackAimDirection(origin);
   }
 
   const positions = aimGeometry.attributes.position;
@@ -5420,7 +6418,7 @@ function getStableGlbRopeOrigin(target = scratchRopeStart) {
 }
 
 function getRopeOrigin(target = scratchRopeStart) {
-  if (config.stableGlbPose && glbCharacter.loaded) {
+  if (config.glbPoseMode === "stable" && config.stableGlbPose && glbCharacter.loaded) {
     return getStableGlbRopeOrigin(target);
   }
 
@@ -5518,9 +6516,35 @@ function spawnAnchorPlasmaSpark(anchor, now) {
   });
 }
 
-function spawnDroneMalfunctionSpark(anchor, now) {
-  if (!anchor || anchor.visualType !== "drone") return;
+function spawnVehicleMalfunctionSpark(anchor, now) {
+  if (!anchor) return;
   const side = anchor.malfunctionSide || 1;
+  if (anchor.visualType === "policeCar") {
+    if (!anchor.malfunctioning) return;
+    const position = characterScratchA;
+    if (anchor.blownThruster?.body) {
+      anchor.blownThruster.body.getWorldPosition(position);
+    } else {
+      position.set(anchor.mesh.position.x + side * 0.56, anchor.mesh.position.y - 0.54, 0.5);
+    }
+    position.x += (Math.random() - 0.5) * 0.16;
+    position.y += (Math.random() - 0.5) * 0.14;
+    position.z = 0.5;
+    const velocity = characterScratchB.set(
+      side * (0.9 + Math.random() * 2.4),
+      -0.2 + Math.random() * 2.6,
+      0,
+    );
+    spawnPhysicsSpark(position, velocity, {
+      color: Math.random() < 0.55 ? 0xff2b1c : 0xffd34a,
+      life: 0.22 + Math.random() * 0.24,
+      size: 0.9,
+      opacity: 1,
+    });
+    return;
+  }
+
+  if (anchor.visualType !== "drone") return;
   const position = characterScratchA.set(
     anchor.mesh.position.x + side * (0.62 + Math.random() * 0.18),
     anchor.mesh.position.y + (Math.random() - 0.5) * 0.34,
@@ -6225,11 +7249,36 @@ function resolvePlayerAnimationState() {
   return "release";
 }
 
-function applyPlayerAnimation(now, flourishProgress, dt) {
-  state.playerAnimation = resolvePlayerAnimationState();
-  if (state.hasLaunched && !state.grappled && Math.abs(state.velocity.x) > 0.35) {
+function getFacingTargetX() {
+  if (!state.hookActive && !state.grappled) return null;
+  if (state.grappled && state.anchor) {
+    return getVisualGrapplePoint(state.anchor, characterScratchA).x;
+  }
+  if (state.hookActive) return state.hookEnd.x;
+  return null;
+}
+
+function updateFacingDirection() {
+  if (!state.hasLaunched || state.gameOver || state.finished) return;
+  if (state.grappled) return;
+
+  const facingTargetX = getFacingTargetX();
+  if (Number.isFinite(facingTargetX)) {
+    const ropeDx = facingTargetX - state.player.x;
+    if (Math.abs(ropeDx) > 0.28) {
+      state.facing = ropeDx >= 0 ? 1 : -1;
+      return;
+    }
+  }
+
+  if (!state.grappled && Math.abs(state.velocity.x) > 0.35) {
     state.facing = state.velocity.x >= 0 ? 1 : -1;
   }
+}
+
+function applyPlayerAnimation(now, flourishProgress, dt) {
+  state.playerAnimation = resolvePlayerAnimationState();
+  updateFacingDirection();
   let flourishFlip = 0;
   let flourishTuck = 0;
   if (flourishProgress > 0) {
@@ -6338,7 +7387,9 @@ function tick(time) {
   updateHookWrap(dt, now);
   updateJeremyFireworks(dt, now);
   updateCamera(dt);
+  updatePixelatePass();
   updateParallaxCity(dt, now);
+  updateStartSteam(dt, now);
   updateMotionTrail();
   updateSpeedLines(now);
   updateHud(now);
@@ -6365,6 +7416,7 @@ gameShell.addEventListener("touchend", suppressNativeTouch, { passive: false, ca
 gameShell.addEventListener("touchcancel", suppressNativeTouch, { passive: false, capture: true });
 
 window.addEventListener("keydown", (event) => {
+  sfx.unlock();
   if (event.code === "Space") event.preventDefault();
   if (event.repeat) return;
 
@@ -6445,9 +7497,19 @@ if (pixelateIntensityInput) {
 if (fxQualitySelect) {
   fxQualitySelect.addEventListener("change", () => setFxQuality(fxQualitySelect.value));
 }
+bindGameButton(sfxMuteButton, () => setSfxMuted(!sfx.settings.sfxMuted));
+bindGameButton(musicMuteButton, () => setMusicMuted(!sfx.settings.musicMuted));
+if (sfxVolumeInput) {
+  sfxVolumeInput.addEventListener("input", () => setSfxVolume(sfxVolumeInput.value));
+}
+if (musicVolumeInput) {
+  musicVolumeInput.addEventListener("input", () => setMusicVolume(musicVolumeInput.value));
+}
 bindGameButton(nextLevelButton, () => reset({ resetLevelStats: true }));
 
 resize();
+sfx.loadSettings();
+syncAudioControls();
 loadFxQualitySettings();
 loadPixelateSettings();
 syncGlbCharacterTransform();

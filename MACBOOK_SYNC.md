@@ -101,7 +101,7 @@ GitHub Pages URL:
 https://emenous.github.io/Hooked/
 ```
 
-Existing Hostinger URL:
+Paused Hostinger URL:
 
 ```text
 https://prntscrn.dev/Hooked/
@@ -123,4 +123,14 @@ git commit -m "Describe the change"
 git push
 ```
 
-Treat GitHub as the source of truth. Treat Hostinger as a deployment target.
+Treat GitHub as the source of truth. Hostinger/FTP deployment is paused.
+
+To push live, commit your changes and push to GitHub:
+
+```bash
+git add .
+git commit -m "Describe the change"
+git push
+```
+
+The `scripts/deploy.sh` helper also only pushes the current branch to the GitHub remote.

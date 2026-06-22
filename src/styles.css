@@ -87,6 +87,20 @@ body {
   -webkit-touch-callout: none;
 }
 
+#bottom-vignette {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: min(46vh, 520px);
+  z-index: 9;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, transparent 0%, rgba(2, 5, 7, 0.1) 35%, rgba(2, 5, 7, 0.58) 78%, rgba(1, 3, 5, 0.9) 100%),
+    radial-gradient(ellipse at 50% 100%, rgba(0, 0, 0, 0.72), transparent 66%);
+  mix-blend-mode: multiply;
+}
+
 #hud,
 #status-center,
 #controls,
@@ -315,7 +329,10 @@ strong {
   gap: 7px;
 }
 
-#character-tools {
+#character-tools,
+#pixelate-tools,
+#fx-tools,
+#audio-tools {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -326,16 +343,26 @@ strong {
   border-radius: 7px;
 }
 
-#character-tools legend {
+#character-tools legend,
+#pixelate-tools legend,
+#fx-tools legend,
+#audio-tools legend {
   padding: 0 4px;
   color: #e4f24b;
   font-size: 10px;
   text-transform: uppercase;
 }
 
-#character-tools input {
+#character-tools input,
+#pixelate-tools input,
+#audio-tools input {
   width: 86px;
   accent-color: #e4f24b;
+}
+
+#audio-tools button[aria-pressed="true"] {
+  border-color: rgba(255, 92, 92, 0.5);
+  color: #ffb1a4;
 }
 
 #build-tools .zoom-control button {
