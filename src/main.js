@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.62";
+const GAME_VERSION = "v0.5.63";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -152,6 +152,9 @@ const config = {
   ropeCrackleFrameMs: 60,
   ropeEnergyWrapCoreWidth: 0.032,
   ropeEnergyWrapGlowWidth: 0.1,
+  ropeVisualCurvePoints: 18,
+  ropeVisualCurveSlack: 0.18,
+  ropeVisualCurveWave: 0.095,
   failedGrappleFallSpeedThreshold: -0.8,
   failedGrappleChainSegments: 10,
   failedGrappleChainSegmentLength: 0.34,
@@ -3584,6 +3587,25 @@ ropeCrackleLine.frustumCulled = false;
 ropeCrackleLine.renderOrder = 25;
 addGameplay(ropeCrackleLine);
 
+const ropeVisualCurveGeometry = new THREE.BufferGeometry();
+ropeVisualCurveGeometry.setAttribute(
+  "position",
+  new THREE.BufferAttribute(new Float32Array(config.ropeVisualCurvePoints * 3), 3),
+);
+const ropeVisualCurveLine = new THREE.Line(
+  ropeVisualCurveGeometry,
+  new THREE.LineBasicMaterial({
+    color: 0xbff8ff,
+    transparent: true,
+    opacity: 0.68,
+    depthTest: false,
+  }),
+);
+ropeVisualCurveLine.visible = false;
+ropeVisualCurveLine.frustumCulled = false;
+ropeVisualCurveLine.renderOrder = 28;
+addGameplay(ropeVisualCurveLine);
+
 function createRopeStripGeometry(pointCount) {
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(pointCount * 2 * 3);
@@ -6887,6 +6909,45 @@ function updateRopeCrackle(start, direction, distance) {
   ropeCrackleLine.visible = true;
 }
 
+function updateRopeVisualCurve(start, direction, distance, now) {
+  if (distance <= 0.08) {
+    ropeVisualCurveLine.visible = false;
+    return;
+  }
+
+  scratchPerpDirection.set(-direction.y, direction.x, 0);
+  const positions = ropeVisualCurveGeometry.attributes.position;
+  const lastIndex = config.ropeVisualCurvePoints - 1;
+  const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  const motion = THREE.MathUtils.clamp(speed / 22, 0.2, 1);
+  const launchMotion = state.grappled ? 0.36 : 1;
+  const distanceScale = THREE.MathUtils.clamp(distance / Math.max(config.grappleRange, 0.001), 0.25, 1);
+  const slack = config.ropeVisualCurveSlack * launchMotion * distanceScale;
+  const wave = config.ropeVisualCurveWave * launchMotion * (0.55 + motion * 0.45);
+  const pulse = state.ropePulse * 0.07;
+
+  for (let index = 0; index <= lastIndex; index += 1) {
+    const amount = index / lastIndex;
+    const edgeFade = Math.sin(amount * Math.PI);
+    const whip = Math.sin(amount * Math.PI * 2.65 - now * 14.0) * wave * edgeFade;
+    const recoil = !state.grappled
+      ? Math.sin((1 - amount) * Math.PI * 1.6 + now * 22.0) * 0.045 * edgeFade
+      : 0;
+    const sag = -slack * edgeFade * edgeFade;
+    const offset = whip + recoil + pulse * edgeFade;
+    positions.setXYZ(
+      index,
+      start.x + direction.x * distance * amount + scratchPerpDirection.x * offset,
+      start.y + direction.y * distance * amount + scratchPerpDirection.y * offset + sag,
+      0.62,
+    );
+  }
+
+  positions.needsUpdate = true;
+  ropeVisualCurveLine.material.opacity = state.grappled ? 0.42 : 0.72;
+  ropeVisualCurveLine.visible = true;
+}
+
 function updateRopeStripGeometry(geometry, centers, width, z = 0.56) {
   const positions = geometry.attributes.position;
   const lastIndex = centers.length - 1;
@@ -6986,6 +7047,7 @@ function plasmaHash(value) {
 function renderFailedGrappleChain() {
   ropeLine.visible = false;
   ropeMesh.visible = false;
+  ropeVisualCurveLine.visible = false;
   ropeCrackleLine.visible = false;
   setRopeEnergyWrapsVisible(false);
   failedGrappleChainLine.visible = true;
@@ -7012,6 +7074,7 @@ function renderRope(dt) {
   if (!state.hookActive) {
     ropeLine.visible = false;
     ropeMesh.visible = false;
+    ropeVisualCurveLine.visible = false;
     failedGrappleChainLine.visible = false;
     ropeCrackleLine.visible = false;
     setRopeEnergyWrapsVisible(false);
@@ -7039,6 +7102,7 @@ function renderRope(dt) {
   maybeSpawnRopeSparks(dt, start, ropeDirectionUnit, ropeDistance);
   updateRopeCrackle(start, ropeDirectionUnit, ropeDistance);
   updateRopeEnergyWrap(start, ropeDirectionUnit, ropeDistance, performance.now() / 1000);
+  updateRopeVisualCurve(start, ropeDirectionUnit, ropeDistance, performance.now() / 1000);
 
   ropeMesh.position.copy(midpoint);
   const ropePulse = 0.88 + state.ropePulse * 0.28 + Math.sin(performance.now() / 90) * 0.05;
