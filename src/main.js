@@ -1,8 +1,5 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
-import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
 const GAME_VERSION = "v0.5.67";
 
@@ -39,21 +36,6 @@ const savePoseButton = document.querySelector("#save-pose");
 const resetPoseButton = document.querySelector("#reset-pose");
 const exportPoseButton = document.querySelector("#export-poses");
 const buildZoomInput = document.querySelector("#build-zoom");
-const pixelateToggleButton = document.querySelector("#pixelate-toggle");
-const pixelateIntensityInput = document.querySelector("#pixelate-intensity");
-const pixelateIntensityValue = document.querySelector("#pixelate-intensity-value");
-const pixelatePlaneInputs = {
-  foreground: document.querySelector("#pixelate-foreground"),
-  gameplay: document.querySelector("#pixelate-gameplay"),
-  midground: document.querySelector("#pixelate-midground"),
-  background: document.querySelector("#pixelate-background"),
-};
-const pixelatePlaneValues = {
-  foreground: document.querySelector("#pixelate-foreground-value"),
-  gameplay: document.querySelector("#pixelate-gameplay-value"),
-  midground: document.querySelector("#pixelate-midground-value"),
-  background: document.querySelector("#pixelate-background-value"),
-};
 const fxQualitySelect = document.querySelector("#fx-quality");
 const sfxMuteButton = document.querySelector("#sfx-mute");
 const sfxVolumeInput = document.querySelector("#sfx-volume");
@@ -220,38 +202,23 @@ const config = {
   stableGrappleSocketDrift: 0.08,
   useRestRelativeGlbPose: true,
   glbPoseSmoothing: 18,
-  glbLoadedArmAimOffset: 0.3,
   characterRimColor: 0xffd21f,
   characterRimIntensity: 1.45,
   characterRimPower: 1.55,
   characterRimLightDirection: new THREE.Vector3(0.58, 0.78, 0.24).normalize(),
-  pixelateEnabled: true,
-  pixelateIntensity: 0.59,
-  pixelateMaxBlockSize: 34,
-  pixelateReferenceZoom: 18,
-  pixelateZoomScalePower: 1.15,
-  pixelateMinZoomScale: 0.22,
-  pixelateMaxZoomScale: 1.35,
-  pixelatePlaneDefaults: {
-    foreground: 0.34,
-    gameplay: 0.46,
-    midground: 0.62,
-    background: 0.72,
-  },
 };
 
 const characterVisualScale = 1;
 const ribbonLengthScale = 0.95;
 const ribbonAnchorBackOffset = 0;
 const ribbonAnchorLiftOffset = 0.02;
-
-const pixelateSettingsStorageKey = "hooked.pixelate.settings.v2";
-const pixelateSettings = {
-  enabled: config.pixelateEnabled,
-  intensity: config.pixelateIntensity,
-  planes: { ...config.pixelatePlaneDefaults },
+const swingPoseTuning = {
+  leftArmRopeAimOffset: 0.29,
+  backwardLeftArmRopeAimScale: 0.5,
+  swingFootClockwise: 0.52,
+  airborneFootClockwise: 0.32,
+  tuckFootClockwise: 0.14,
 };
-const pixelatePlaneKeys = ["foreground", "gameplay", "midground", "background"];
 const fxQualityStorageKey = "hooked.fx.quality.v1";
 const fxQualityProfiles = {
   high: {
@@ -303,12 +270,6 @@ const editorUi = {
   level: currentLevelId,
   objectType: objectTypeSelect?.value ?? "anchor",
   zoom: config.cameraBaseZoom,
-  pixelate: pixelateSettings.enabled,
-  pixelateIntensity: pixelateSettings.intensity,
-  pixelateForeground: pixelateSettings.planes.foreground,
-  pixelateGameplay: pixelateSettings.planes.gameplay,
-  pixelateMidground: pixelateSettings.planes.midground,
-  pixelateBackground: pixelateSettings.planes.background,
   fxQuality: fxQualitySettings.level,
   sfxMuted: false,
   sfxVolume: 0.7,
@@ -925,112 +886,6 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.setPixelRatio(1);
 renderer.setClearColor(0x21172c, 1);
-
-const PixelateShader = {
-  uniforms: {
-    tDiffuse: { value: null },
-    u_resolution: { value: new THREE.Vector2(1, 1) },
-    intensity: { value: config.pixelateIntensity },
-    pixelSize: { value: 1 },
-    backgroundBoost: { value: 1.3 },
-    edgeBlur: { value: 0.72 },
-    foregroundDetail: { value: 0.22 },
-    layerPixelMix: { value: new THREE.Vector4(
-      config.pixelatePlaneDefaults.foreground,
-      config.pixelatePlaneDefaults.gameplay,
-      config.pixelatePlaneDefaults.midground,
-      config.pixelatePlaneDefaults.background,
-    ) },
-  },
-  vertexShader: [
-    "varying vec2 vUv;",
-    "void main() {",
-    "  vUv = uv;",
-    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
-    "}",
-  ].join("\n"),
-  fragmentShader: [
-    "varying vec2 vUv;",
-    "uniform sampler2D tDiffuse;",
-    "uniform vec2 u_resolution;",
-    "uniform float intensity;",
-    "uniform float pixelSize;",
-    "uniform float backgroundBoost;",
-    "uniform float edgeBlur;",
-    "uniform float foregroundDetail;",
-    "uniform vec4 layerPixelMix;",
-    "vec3 bg(vec2 uv) {",
-    "  return texture2D(tDiffuse, clamp(uv, vec2(0.001), vec2(0.999))).rgb;",
-    "}",
-    "vec3 pixelSample(vec2 uv, float size) {",
-    "  float granularity = floor(size);",
-    "  vec2 sampleUv = uv;",
-    "  if (granularity <= 1.0) {",
-    "    granularity = 1.0;",
-    "  }",
-    "  if (mod(granularity, 2.0) > 0.0 && granularity > 1.0) granularity += 1.0;",
-    "  float dx = granularity / u_resolution.x;",
-    "  float dy = granularity / u_resolution.y;",
-    "  sampleUv = vec2(dx * (floor(sampleUv.x / dx) + 0.5), dy * (floor(sampleUv.y / dy) + 0.5));",
-    "  return bg(sampleUv);",
-    "}",
-    "vec3 blurSample(vec2 uv, float radius) {",
-    "  vec2 px = radius / u_resolution;",
-    "  vec3 col = bg(uv) * 0.22;",
-    "  col += bg(uv + vec2(px.x, 0.0)) * 0.11;",
-    "  col += bg(uv - vec2(px.x, 0.0)) * 0.11;",
-    "  col += bg(uv + vec2(0.0, px.y)) * 0.11;",
-    "  col += bg(uv - vec2(0.0, px.y)) * 0.11;",
-    "  col += bg(uv + px) * 0.085;",
-    "  col += bg(uv - px) * 0.085;",
-    "  col += bg(uv + vec2(px.x, -px.y)) * 0.085;",
-    "  col += bg(uv + vec2(-px.x, px.y)) * 0.085;",
-    "  return col;",
-    "}",
-    "void main() {",
-    "  vec3 tex = bg(vUv);",
-    "  vec2 lensUv = vUv - vec2(0.5);",
-    "  lensUv.x *= u_resolution.x / max(u_resolution.y, 1.0);",
-    "  float lens = length(lensUv);",
-    "  float edge = smoothstep(0.42, 0.86, lens);",
-    "  float foregroundMask = 1.0 - smoothstep(0.08, 0.34, vUv.y);",
-    "  float gameplayMask = smoothstep(0.16, 0.38, vUv.y) * (1.0 - smoothstep(0.58, 0.78, vUv.y));",
-    "  float midgroundMask = smoothstep(0.42, 0.62, vUv.y) * (1.0 - smoothstep(0.72, 0.92, vUv.y));",
-    "  float backgroundMask = smoothstep(0.62, 0.98, vUv.y);",
-    "  float totalMask = max(foregroundMask + gameplayMask + midgroundMask + backgroundMask, 0.001);",
-    "  vec4 masks = vec4(foregroundMask, gameplayMask, midgroundMask, backgroundMask);",
-    "  vec4 planeAmounts = clamp(layerPixelMix, vec4(0.0), vec4(1.0));",
-    "  float layerMix = dot(masks, planeAmounts) / totalMask;",
-    "  float layerIntensity = clamp(intensity * layerMix, 0.0, 1.0);",
-    "  float fgSize = pixelSize * mix(0.28, 1.1, planeAmounts.x);",
-    "  float playSize = pixelSize * mix(0.28, 1.16, planeAmounts.y);",
-    "  float midSize = pixelSize * mix(0.28, 1.24, planeAmounts.z);",
-    "  float bgSize = pixelSize * mix(0.28, backgroundBoost, planeAmounts.w);",
-    "  vec3 layerPix = (",
-    "    pixelSample(vUv, fgSize) * foregroundMask +",
-    "    pixelSample(vUv, playSize) * gameplayMask +",
-    "    pixelSample(vUv, midSize) * midgroundMask +",
-    "    pixelSample(vUv, bgSize) * backgroundMask",
-    "  ) / totalMask;",
-    "  vec3 detail = tex;",
-    "  detail += (tex - pixelSample(vUv, max(1.0, pixelSize * 0.5))) * foregroundDetail * foregroundMask * (1.0 - layerMix);",
-    "  vec3 col = mix(detail, layerPix, clamp(layerIntensity * (0.72 + layerMix * 0.38), 0.0, 1.0));",
-    "  vec3 edgeBlurCol = blurSample(vUv, edgeBlur * (3.0 + pixelSize * 0.72));",
-    "  col = mix(col, edgeBlurCol, edge * 0.28);",
-    "  vec3 edgePix = pixelSample(vUv, pixelSize * (1.12 + edge * 0.58));",
-    "  col = mix(col, edgePix, edge * intensity * 0.28);",
-    "  col *= 1.0 - edge * 0.18;",
-    "  gl_FragColor = vec4(col, 1.0);",
-    "}",
-  ].join("\n"),
-};
-
-const composer = new EffectComposer(renderer);
-const renderPass = new RenderPass(scene, camera);
-const pixelatePass = new ShaderPass(PixelateShader);
-composer.addPass(renderPass);
-composer.addPass(pixelatePass);
-pixelatePass.enabled = pixelateSettings.enabled;
 
 const light = new THREE.DirectionalLight(0xffffff, 3.0);
 light.position.set(8, 18, 18);
@@ -3011,7 +2866,16 @@ function clampPoseAngle(key, angle) {
 }
 
 function getLoadedLeftArmAimOffset() {
-  return config.glbLoadedArmAimOffset * (state.facing < 0 ? 0.4 : 1);
+  return swingPoseTuning.leftArmRopeAimOffset * (state.facing < 0 ? swingPoseTuning.backwardLeftArmRopeAimScale : 1);
+}
+
+function getFootClockwiseTuning({ hooked, airborne, tuck }) {
+  const base = hooked
+    ? swingPoseTuning.swingFootClockwise
+    : airborne
+      ? swingPoseTuning.airborneFootClockwise
+      : 0;
+  return THREE.MathUtils.lerp(base, swingPoseTuning.tuckFootClockwise, THREE.MathUtils.smootherstep(tuck, 0, 1));
 }
 
 function captureCurrentGlbPoseAngles() {
@@ -3394,6 +3258,10 @@ function setGlbLegSwingPose(pivots, {
     rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.42, compact);
   }
 
+  const footClockwise = getFootClockwiseTuning({ hooked, airborne, tuck });
+  leftAnkle -= footClockwise;
+  rightAnkle -= footClockwise;
+
   setGlbPivotAngle(pivots.leftHip, clampAngle(leftHip, glbJointLimits.hip));
   setGlbPivotAngle(pivots.rightHip, clampAngle(rightHip, glbJointLimits.hip));
   setGlbPivotAngle(pivots.leftKnee, clampAngle(leftKnee, glbJointLimits.knee));
@@ -3761,6 +3629,10 @@ function setGlbRagdollLitePose(now) {
     rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.42, compact);
   }
 
+  const footClockwise = getFootClockwiseTuning({ hooked, airborne, tuck });
+  leftAnkle -= footClockwise;
+  rightAnkle -= footClockwise;
+
   setGlbPivotAngle(pivots.leftHip, clampAngle(leftHip, glbJointLimits.hip));
   setGlbPivotAngle(pivots.rightHip, clampAngle(rightHip, glbJointLimits.hip));
   setGlbPivotAngle(pivots.leftKnee, clampAngle(leftKnee, glbJointLimits.knee));
@@ -4065,77 +3937,6 @@ function setFxQuality(level) {
   syncFxQualityControls();
 }
 
-function getPixelateZoomScale() {
-  const zoomRatio = config.pixelateReferenceZoom / Math.max(camera.position.z, 0.001);
-  return THREE.MathUtils.clamp(
-    Math.pow(zoomRatio, config.pixelateZoomScalePower),
-    config.pixelateMinZoomScale,
-    config.pixelateMaxZoomScale,
-  );
-}
-
-function getEffectivePixelateIntensity() {
-  return THREE.MathUtils.clamp(pixelateSettings.intensity * getPixelateZoomScale(), 0, 1);
-}
-
-function getPixelateBlockSize(intensity = getEffectivePixelateIntensity()) {
-  let blockSize = Math.floor(THREE.MathUtils.lerp(1, config.pixelateMaxBlockSize, intensity));
-  if (blockSize > 1 && blockSize % 2 > 0) blockSize += 1;
-  return THREE.MathUtils.clamp(blockSize, 1, config.pixelateMaxBlockSize);
-}
-
-function getPixelatePlaneBlockSize(blockSize, plane, amount) {
-  const maxScale = plane === "background"
-    ? 1.3
-    : plane === "midground"
-      ? 1.24
-      : plane === "gameplay"
-        ? 1.16
-        : 1.1;
-  const planeSize = Math.round(blockSize * THREE.MathUtils.lerp(0.28, maxScale, amount));
-  return THREE.MathUtils.clamp(planeSize, 1, config.pixelateMaxBlockSize);
-}
-
-function updatePixelatePass() {
-  const effectiveIntensity = getEffectivePixelateIntensity();
-  const blockSize = getPixelateBlockSize(effectiveIntensity);
-  pixelatePass.enabled = pixelateSettings.enabled;
-  pixelatePass.uniforms.intensity.value = effectiveIntensity;
-  pixelatePass.uniforms.pixelSize.value = blockSize;
-  pixelatePass.uniforms.backgroundBoost.value = 1.3;
-  pixelatePass.uniforms.edgeBlur.value = THREE.MathUtils.lerp(0.38, 0.86, effectiveIntensity);
-  pixelatePass.uniforms.foregroundDetail.value = THREE.MathUtils.lerp(0.12, 0.28, effectiveIntensity);
-  pixelatePass.uniforms.layerPixelMix.value.set(
-    pixelateSettings.planes.foreground,
-    pixelateSettings.planes.gameplay,
-    pixelateSettings.planes.midground,
-    pixelateSettings.planes.background,
-  );
-  if (pixelateIntensityValue) {
-    pixelateIntensityValue.textContent = `${pixelateSettings.intensity.toFixed(2)} / ${blockSize}px`;
-  }
-  for (const key of pixelatePlaneKeys) {
-    const output = pixelatePlaneValues[key];
-    if (!output) continue;
-    const planeAmount = pixelateSettings.planes[key];
-    const planeSize = getPixelatePlaneBlockSize(blockSize, key, planeAmount);
-    output.textContent = `${planeAmount.toFixed(2)} / ${planeSize}px`;
-  }
-}
-
-function syncPixelateControls() {
-  updatePixelatePass();
-  if (pixelateToggleButton) {
-    setIconButtonLabel(pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line");
-    pixelateToggleButton.setAttribute("aria-pressed", String(pixelateSettings.enabled));
-  }
-  if (pixelateIntensityInput) pixelateIntensityInput.value = String(pixelateSettings.intensity);
-  for (const key of pixelatePlaneKeys) {
-    if (pixelatePlaneInputs[key]) pixelatePlaneInputs[key].value = String(pixelateSettings.planes[key]);
-  }
-  syncEditorPane();
-}
-
 function syncAudioControls() {
   editorUi.sfxMuted = sfx.settings.sfxMuted;
   editorUi.sfxVolume = sfx.settings.sfxVolume;
@@ -4194,12 +3995,6 @@ function syncEditorPane() {
   editorUi.level = currentLevelId;
   editorUi.objectType = objectTypeSelect?.value ?? editorUi.objectType;
   editorUi.zoom = Math.round(camera.position.z);
-  editorUi.pixelate = pixelateSettings.enabled;
-  editorUi.pixelateIntensity = pixelateSettings.intensity;
-  editorUi.pixelateForeground = pixelateSettings.planes.foreground;
-  editorUi.pixelateGameplay = pixelateSettings.planes.gameplay;
-  editorUi.pixelateMidground = pixelateSettings.planes.midground;
-  editorUi.pixelateBackground = pixelateSettings.planes.background;
   editorUi.fxQuality = fxQualitySettings.level;
   editorUi.sfxMuted = sfx.settings.sfxMuted;
   editorUi.sfxVolume = sfx.settings.sfxVolume;
@@ -4307,44 +4102,6 @@ async function initializeEditorPane() {
     syncEditorPane();
   });
 
-  const shaderFolder = tweakPane.addFolder({ title: "Pixel Shader" });
-  addTweakBinding(shaderFolder, editorUi, "pixelate", { label: "Enabled" }, (value) => setPixelateEnabled(value));
-  addTweakBinding(
-    shaderFolder,
-    editorUi,
-    "pixelateIntensity",
-    { label: "Intensity", min: 0, max: 1, step: 0.01 },
-    (value) => setPixelateIntensity(value),
-  );
-  addTweakBinding(
-    shaderFolder,
-    editorUi,
-    "pixelateForeground",
-    { label: "Foreground", min: 0, max: 1, step: 0.01 },
-    (value) => setPixelatePlaneIntensity("foreground", value),
-  );
-  addTweakBinding(
-    shaderFolder,
-    editorUi,
-    "pixelateGameplay",
-    { label: "Play area", min: 0, max: 1, step: 0.01 },
-    (value) => setPixelatePlaneIntensity("gameplay", value),
-  );
-  addTweakBinding(
-    shaderFolder,
-    editorUi,
-    "pixelateMidground",
-    { label: "Midground", min: 0, max: 1, step: 0.01 },
-    (value) => setPixelatePlaneIntensity("midground", value),
-  );
-  addTweakBinding(
-    shaderFolder,
-    editorUi,
-    "pixelateBackground",
-    { label: "Background", min: 0, max: 1, step: 0.01 },
-    (value) => setPixelatePlaneIntensity("background", value),
-  );
-
   const effectsFolder = tweakPane.addFolder({ title: "Effects" });
   addTweakBinding(
     effectsFolder,
@@ -4381,51 +4138,6 @@ async function initializeEditorPane() {
 
   syncEditorPane();
   setPaused(state.paused);
-}
-
-function savePixelateSettings() {
-  localStorage.setItem(pixelateSettingsStorageKey, JSON.stringify(pixelateSettings));
-}
-
-function loadPixelateSettings() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(pixelateSettingsStorageKey));
-    if (!stored || typeof stored !== "object") return;
-    if (typeof stored.enabled === "boolean") pixelateSettings.enabled = stored.enabled;
-    if (Number.isFinite(stored.intensity)) {
-      pixelateSettings.intensity = THREE.MathUtils.clamp(stored.intensity, 0, 1);
-    }
-    if (stored.planes && typeof stored.planes === "object") {
-      for (const key of pixelatePlaneKeys) {
-        if (Number.isFinite(stored.planes[key])) {
-          pixelateSettings.planes[key] = THREE.MathUtils.clamp(stored.planes[key], 0, 1);
-        }
-      }
-    }
-  } catch {
-    localStorage.removeItem(pixelateSettingsStorageKey);
-  } finally {
-    syncPixelateControls();
-  }
-}
-
-function setPixelateEnabled(enabled) {
-  pixelateSettings.enabled = enabled;
-  savePixelateSettings();
-  syncPixelateControls();
-}
-
-function setPixelateIntensity(value) {
-  pixelateSettings.intensity = THREE.MathUtils.clamp(Number(value), 0, 1);
-  savePixelateSettings();
-  syncPixelateControls();
-}
-
-function setPixelatePlaneIntensity(plane, value) {
-  if (!pixelatePlaneKeys.includes(plane)) return;
-  pixelateSettings.planes[plane] = THREE.MathUtils.clamp(Number(value), 0, 1);
-  savePixelateSettings();
-  syncPixelateControls();
 }
 
 const crashPieces = [];
@@ -6237,8 +5949,6 @@ function resize() {
   const width = window.innerWidth;
   const height = window.innerHeight;
   renderer.setSize(width, height, false);
-  composer.setSize(width, height);
-  pixelatePass.uniforms.u_resolution.value.set(width, height);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
 }
@@ -6676,7 +6386,6 @@ function decorateControls() {
     [savePoseButton, "Save pose", "save"],
     [resetPoseButton, "Reset pose", "rotate-ccw"],
     [exportPoseButton, "Download poses", "download"],
-    [pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line"],
     [muteButton, "", sfx.settings.masterMuted ? "volume-x" : "volume-2"],
     [sfxMuteButton, sfx.settings.sfxMuted ? "SFX off" : "SFX on", sfx.settings.sfxMuted ? "volume-x" : "volume-2"],
     [musicMuteButton, sfx.settings.musicMuted ? "Music off" : "Music on", sfx.settings.musicMuted ? "volume-x" : "music-2"],
@@ -8496,7 +8205,6 @@ function countActiveEffects() {
   active += trailLines.reduce((total, line) => total + (line.visible ? 1 : 0), 0);
   active += crashPieces.reduce((total, piece) => total + (piece.mesh.visible ? 1 : 0), 0);
   active += jeremyFireworks.reduce((total, particle) => total + (particle.life > 0 ? 1 : 0), 0);
-  if (pixelateSettings.enabled) active += 1;
   return active;
 }
 
@@ -8956,17 +8664,12 @@ function tick(time) {
   updateHookWrap(dt, now);
   updateJeremyFireworks(dt, now);
   updateCamera(dt);
-  updatePixelatePass();
   updateParallaxCity(dt, now);
   updateStartSteam(dt, now);
   updateMotionTrail();
   updateSpeedLines(now);
   updateHud(now);
-  if (pixelateSettings.enabled) {
-    composer.render();
-  } else {
-    renderer.render(scene, camera);
-  }
+  renderer.render(scene, camera);
   recordPerformanceSample(rawFrameMs, performance.now() - tickStartedAt, liveNow);
   requestAnimationFrame(tick);
 }
@@ -9061,15 +8764,6 @@ if (levelSelect) {
   levelSelect.value = currentLevelId;
   levelSelect.addEventListener("change", () => applyLevel(levelSelect.value, { preserveSavedLayout: true }));
 }
-bindGameButton(pixelateToggleButton, () => setPixelateEnabled(!pixelateSettings.enabled));
-if (pixelateIntensityInput) {
-  pixelateIntensityInput.addEventListener("input", () => setPixelateIntensity(pixelateIntensityInput.value));
-}
-for (const key of pixelatePlaneKeys) {
-  const input = pixelatePlaneInputs[key];
-  if (!input) continue;
-  input.addEventListener("input", () => setPixelatePlaneIntensity(key, input.value));
-}
 if (fxQualitySelect) {
   fxQualitySelect.addEventListener("change", () => setFxQuality(fxQualitySelect.value));
 }
@@ -9087,7 +8781,6 @@ resize();
 sfx.loadSettings();
 syncAudioControls();
 loadFxQualitySettings();
-loadPixelateSettings();
 syncGlbCharacterTransform();
 syncCharacterSourceVisibility();
 initializeEditorPane();

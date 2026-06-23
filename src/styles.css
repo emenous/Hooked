@@ -77,8 +77,6 @@ body {
   width: 100vw;
   height: 100vh;
   cursor: grab;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -327,7 +325,6 @@ strong {
 }
 
 #character-tools,
-#pixelate-tools,
 #fx-tools,
 #audio-tools {
   display: flex;
@@ -341,7 +338,6 @@ strong {
 }
 
 #character-tools legend,
-#pixelate-tools legend,
 #fx-tools legend,
 #audio-tools legend {
   padding: 0 4px;
@@ -351,7 +347,6 @@ strong {
 }
 
 #character-tools input,
-#pixelate-tools input,
 #audio-tools input {
   width: 86px;
   accent-color: #e4f24b;
