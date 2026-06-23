@@ -7,6 +7,7 @@ const defaultTarget = "assets/models/m_character_skeletal_textures_1k.glb";
 const targetArg = process.argv[2] ?? defaultTarget;
 const target = path.normalize(targetArg);
 const sourcePath = path.join(repoRoot, "src", "main.js");
+const poseReferencePath = path.join(repoRoot, "data", "character_pose_references.json");
 
 function normalizeSlash(value) {
   return path.normalize(value.replace(/^\.\//, ""));
@@ -46,6 +47,25 @@ function pushCheck(checks, name, ok, details = {}) {
   checks.push({ name, ok: Boolean(ok), ...details });
 }
 
+function readPoseReferenceLibrary() {
+  if (!fs.existsSync(poseReferencePath)) {
+    return { exists: false, error: "missing-file" };
+  }
+  try {
+    const payload = JSON.parse(fs.readFileSync(poseReferencePath, "utf8"));
+    return {
+      exists: true,
+      version: payload.version,
+      model: payload.model,
+      poseMode: payload.poseMode,
+      poses: payload.poses && typeof payload.poses === "object" ? payload.poses : null,
+      poseKeys: payload.poses && typeof payload.poses === "object" ? Object.keys(payload.poses) : [],
+    };
+  } catch (error) {
+    return { exists: true, error: error.message };
+  }
+}
+
 function jointToRuntimeKey(jointName) {
   const map = {
     M_root: "root",
@@ -82,6 +102,7 @@ function sidePosition(sidePositions, name) {
 function main() {
   const source = fs.readFileSync(sourcePath, "utf8");
   const config = parseConfig(source);
+  const poseLibrary = readPoseReferenceLibrary();
   const audit = runJsonTool("audit_character_skeleton.js", [target]);
   const axes = runJsonTool("diagnose_character_axes.js", [target]);
   const mesh = runJsonTool("audit_glb_mesh_breakdown.js", [target]);
@@ -99,6 +120,21 @@ function main() {
   });
   pushCheck(checks, "source-default-pose-mode-ragdoll-lite", config.glbPoseMode === "ragdollLite", {
     value: config.glbPoseMode,
+  });
+  pushCheck(checks, "project-pose-reference-library", (
+    poseLibrary.exists &&
+    !poseLibrary.error &&
+    poseLibrary.version === 1 &&
+    poseLibrary.poses &&
+    source.includes("characterPoseProjectPath") &&
+    source.includes("data/character_pose_references.json")
+  ), {
+    file: path.relative(repoRoot, poseReferencePath),
+    version: poseLibrary.version,
+    model: poseLibrary.model,
+    poseMode: poseLibrary.poseMode,
+    poseKeys: poseLibrary.poseKeys,
+    error: poseLibrary.error ?? null,
   });
   pushCheck(checks, "skeleton-contract", audit.ok, {
     failures: audit.failures,

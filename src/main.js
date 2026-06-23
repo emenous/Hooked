@@ -37,6 +37,7 @@ const zoomFitButton = document.querySelector("#zoom-fit");
 const animateCharacterButton = document.querySelector("#animate-character");
 const savePoseButton = document.querySelector("#save-pose");
 const resetPoseButton = document.querySelector("#reset-pose");
+const exportPoseButton = document.querySelector("#export-poses");
 const buildZoomInput = document.querySelector("#build-zoom");
 const pixelateToggleButton = document.querySelector("#pixelate-toggle");
 const pixelateIntensityInput = document.querySelector("#pixelate-intensity");
@@ -291,6 +292,8 @@ const fxQualitySettings = {
   level: config.fxQuality,
 };
 const characterPoseStorageKey = "hooked.character.pose.references.v1";
+const characterPoseProjectPath = "./data/character_pose_references.json";
+const characterPoseLibraryVersion = 1;
 
 const levelSelectionStorageKey = "hooked.current.level.v1";
 let currentLevelId = localStorage.getItem(levelSelectionStorageKey) || "skyline";
@@ -1377,6 +1380,12 @@ window.HookedDebug = {
   poseHealth() {
     return describeCharacterPoseHealth();
   },
+  poseReferences() {
+    return describeCharacterPoseReferences();
+  },
+  exportPoseReferences() {
+    return createCharacterPoseReferenceLibrary();
+  },
   previewPose(overrides) {
     return previewCharacterPose(overrides);
   },
@@ -2189,8 +2198,15 @@ const glbPivotChildKeys = {
 };
 
 const poseReferenceState = {
-  poses: loadCharacterPoseReferences(),
+  projectPath: characterPoseProjectPath,
+  projectLoaded: false,
+  projectError: null,
+  projectPoses: {},
+  localPoses: loadCharacterPoseReferences(),
+  poses: {},
 };
+rebuildCharacterPoseReferences();
+loadProjectCharacterPoseReferences();
 
 const poseHandleDefinitions = [
   { key: "pelvis", driverKey: "root" },
@@ -2402,6 +2418,18 @@ function getRibbonLineWorldPoint(line, index, target) {
   return target;
 }
 
+function describeCharacterPoseReferences() {
+  return {
+    projectPath: poseReferenceState.projectPath,
+    projectLoaded: poseReferenceState.projectLoaded,
+    projectError: poseReferenceState.projectError,
+    projectKeys: Object.keys(poseReferenceState.projectPoses).sort(),
+    localKeys: Object.keys(poseReferenceState.localPoses).sort(),
+    mergedKeys: Object.keys(poseReferenceState.poses).sort(),
+    library: createCharacterPoseReferenceLibrary(),
+  };
+}
+
 function describeGlbRig() {
   const joints = {};
   for (const [key, pivot] of Object.entries(glbCharacter.pivots)) {
@@ -2431,6 +2459,13 @@ function describeGlbRig() {
     skinnedMeshes: glbCharacter.skinnedMeshCount,
     animations: glbCharacter.animationClipNames,
     driverAxes: { ...glbPivotDriverAxes },
+    poseReferences: {
+      projectLoaded: poseReferenceState.projectLoaded,
+      projectError: poseReferenceState.projectError,
+      projectKeys: Object.keys(poseReferenceState.projectPoses).sort(),
+      localKeys: Object.keys(poseReferenceState.localPoses).sort(),
+      mergedKeys: Object.keys(poseReferenceState.poses).sort(),
+    },
     joints,
   };
 }
@@ -2869,8 +2904,63 @@ function loadCharacterPoseReferences() {
   }
 }
 
+function normalizeCharacterPoseAngles(angles = {}) {
+  const normalized = {};
+  for (const [key, value] of Object.entries(angles)) {
+    if (!glbPivotNames[key] || !Number.isFinite(value)) continue;
+    normalized[key] = Number(clampPoseAngle(key, value).toFixed(4));
+  }
+  return normalized;
+}
+
+function normalizeCharacterPoseLibrary(payload) {
+  const rawPoses = payload?.poses && typeof payload.poses === "object"
+    ? payload.poses
+    : {};
+  const poses = {};
+  for (const [key, pose] of Object.entries(rawPoses)) {
+    const angles = normalizeCharacterPoseAngles(pose?.angles);
+    if (!Object.keys(angles).length) continue;
+    poses[key] = {
+      key,
+      savedAt: typeof pose.savedAt === "string" ? pose.savedAt : null,
+      source: typeof pose.source === "string" ? pose.source : "project",
+      notes: typeof pose.notes === "string" ? pose.notes : "",
+      angles,
+    };
+  }
+  return poses;
+}
+
+function rebuildCharacterPoseReferences() {
+  poseReferenceState.poses = {
+    ...poseReferenceState.projectPoses,
+    ...poseReferenceState.localPoses,
+  };
+}
+
+async function loadProjectCharacterPoseReferences() {
+  try {
+    const response = await fetch(`${characterPoseProjectPath}?v=${characterPoseLibraryVersion}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    poseReferenceState.projectPoses = normalizeCharacterPoseLibrary(payload);
+    poseReferenceState.projectLoaded = true;
+    poseReferenceState.projectError = null;
+    rebuildCharacterPoseReferences();
+    syncAnimatorControls();
+    updatePoseHandles();
+  } catch (error) {
+    poseReferenceState.projectLoaded = false;
+    poseReferenceState.projectError = error?.message ?? String(error);
+    console.warn("Could not load character pose reference library", poseReferenceState.projectError);
+  }
+}
+
 function saveCharacterPoseReferences() {
-  localStorage.setItem(characterPoseStorageKey, JSON.stringify(poseReferenceState.poses));
+  localStorage.setItem(characterPoseStorageKey, JSON.stringify(poseReferenceState.localPoses));
 }
 
 function getCurrentPoseReferenceKey() {
@@ -2964,6 +3054,7 @@ function syncAnimatorControls() {
   setIconButtonLabel(animateCharacterButton, state.animatorMode ? "Animating" : "Animate", "bone");
   setIconButtonLabel(savePoseButton, "Save pose", "save");
   setIconButtonLabel(resetPoseButton, "Reset pose", "rotate-ccw");
+  setIconButtonLabel(exportPoseButton, "Download poses", "download");
   animateCharacterButton?.setAttribute("aria-pressed", String(state.animatorMode));
   animateCharacterButton?.classList.toggle("active", state.animatorMode);
 }
@@ -2992,24 +3083,66 @@ function saveCurrentCharacterPose() {
   const angles = state.animatorMode
     ? { ...state.manualPoseAngles, ...captureCurrentGlbPoseAngles() }
     : captureCurrentGlbPoseAngles();
-  poseReferenceState.poses[key] = {
+  poseReferenceState.localPoses[key] = {
     key,
     savedAt: new Date().toISOString(),
-    angles,
+    source: "local_animator_override",
+    angles: normalizeCharacterPoseAngles(angles),
   };
-  state.manualPoseAngles = { ...angles };
+  rebuildCharacterPoseReferences();
+  state.manualPoseAngles = { ...poseReferenceState.poses[key].angles };
   saveCharacterPoseReferences();
   syncAnimatorControls();
 }
 
 function resetCurrentCharacterPoseReference() {
   const key = getCurrentPoseReferenceKey();
-  delete poseReferenceState.poses[key];
-  state.manualPoseAngles = {};
-  resetGlbPivotAngles();
+  delete poseReferenceState.localPoses[key];
+  rebuildCharacterPoseReferences();
+  const fallbackPose = poseReferenceState.poses[key];
+  state.manualPoseAngles = fallbackPose?.angles ? { ...fallbackPose.angles } : {};
+  if (fallbackPose?.angles) {
+    applyGlbPoseAngles(fallbackPose.angles, true);
+  } else {
+    resetGlbPivotAngles();
+  }
   saveCharacterPoseReferences();
   syncAnimatorControls();
   updatePoseHandles();
+}
+
+function createCharacterPoseReferenceLibrary() {
+  const poses = {};
+  for (const key of Object.keys(poseReferenceState.poses).sort()) {
+    const pose = poseReferenceState.poses[key];
+    const source = poseReferenceState.localPoses[key] ? "local_override" : "project";
+    poses[key] = {
+      key,
+      savedAt: pose.savedAt ?? null,
+      source,
+      notes: pose.notes ?? "",
+      angles: normalizeCharacterPoseAngles(pose.angles),
+    };
+  }
+  return {
+    version: characterPoseLibraryVersion,
+    updatedAt: new Date().toISOString(),
+    model: config.glbCharacterPath,
+    poseMode: config.glbPoseMode,
+    note: "Committed Sling pose references. Browser-local poses override project poses while authoring.",
+    poses,
+  };
+}
+
+function downloadCharacterPoseReferences() {
+  const text = `${JSON.stringify(createCharacterPoseReferenceLibrary(), null, 2)}\n`;
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "character_pose_references.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function pickPoseHandle(event) {
@@ -4090,6 +4223,10 @@ async function initializeEditorPane() {
   });
   animatorFolder.addButton({ title: "Reset pose" }).on("click", () => {
     resetCurrentCharacterPoseReference();
+    syncEditorPane();
+  });
+  animatorFolder.addButton({ title: "Download poses" }).on("click", () => {
+    downloadCharacterPoseReferences();
     syncEditorPane();
   });
 
@@ -6461,6 +6598,7 @@ function decorateControls() {
     [animateCharacterButton, state.animatorMode ? "Animating" : "Animate", "bone"],
     [savePoseButton, "Save pose", "save"],
     [resetPoseButton, "Reset pose", "rotate-ccw"],
+    [exportPoseButton, "Download poses", "download"],
     [pixelateToggleButton, pixelateSettings.enabled ? "Pixelate on" : "Pixelate off", "scan-line"],
     [muteButton, "", sfx.settings.masterMuted ? "volume-x" : "volume-2"],
     [sfxMuteButton, sfx.settings.sfxMuted ? "SFX off" : "SFX on", sfx.settings.sfxMuted ? "volume-x" : "volume-2"],
@@ -8840,6 +8978,7 @@ bindGameButton(zoomFitButton, fitBuildViewToStage);
 bindGameButton(animateCharacterButton, () => setAnimatorMode(!state.animatorMode));
 bindGameButton(savePoseButton, saveCurrentCharacterPose);
 bindGameButton(resetPoseButton, resetCurrentCharacterPoseReference);
+bindGameButton(exportPoseButton, downloadCharacterPoseReferences);
 buildZoomInput.addEventListener("input", () => setBuildZoom(buildZoomInput.value));
 if (levelSelect) {
   levelSelect.value = currentLevelId;

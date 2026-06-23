@@ -155,6 +155,25 @@ node tools/check_character_model_budget.js path/to/candidate.glb --budget final
 
 The contract verifier enforces the playable prototype budget. Only use `--strict` with the final budget once the candidate is meant to be production-ready. During rebuild tests, the final budget report is still useful when it fails because it shows which part of the payload is holding the model back.
 
+## Runtime Pose References
+
+The in-game build animator can save numeric joint-angle poses while testing. Those quick saves live in browser `localStorage` first, so they are useful for authoring but they are not shipped by themselves.
+
+Committed/default pose blocks live in:
+
+```text
+data/character_pose_references.json
+```
+
+Build-mode workflow:
+
+1. Press `B`, pause, then use `Animate`.
+2. Drag the joint markers on the screen plane and use `Save pose`.
+3. Use `Download poses`.
+4. Review the JSON and copy approved pose blocks into `data/character_pose_references.json`.
+
+Project pose references load first. Browser-local saves override matching project keys while authoring. `Reset pose` removes the local override for the current animation state and falls back to the committed project pose if one exists.
+
 ## Retargeting Premade Animation Clips
 
 Drop source animation files into:

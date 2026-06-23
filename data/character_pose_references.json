@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "updatedAt": null,
+  "model": "./assets/models/m_character_skeletal_textures_1k.glb",
+  "poseMode": "ragdollLite",
+  "note": "Committed Sling pose references. Use the in-game animator to save a pose, download this JSON, review it, then copy approved pose blocks here.",
+  "poses": {}
+}

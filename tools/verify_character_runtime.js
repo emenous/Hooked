@@ -397,10 +397,21 @@ async function main() {
     `);
 
     const results = [];
+    await waitForRuntime(cdp, "window.HookedDebug?.poseReferences?.().projectLoaded === true", 5000);
+    const poseReferences = await evaluate(cdp, "window.HookedDebug.poseReferences()");
+    addResult(results, "project-pose-reference-library-loaded", poseReferences.projectLoaded && !poseReferences.projectError, {
+      projectPath: poseReferences.projectPath,
+      projectKeys: poseReferences.projectKeys,
+      localKeys: poseReferences.localKeys,
+      mergedKeys: poseReferences.mergedKeys,
+      error: poseReferences.projectError,
+    });
+
     const rig = await evaluate(cdp, "window.HookedDebug.characterRig()");
     addResult(results, "runtime-glb-loaded", rig.loaded && rig.skinnedMeshes >= 1, {
       skinnedMeshes: rig.skinnedMeshes,
       animations: rig.animations,
+      poseReferences: rig.poseReferences,
     });
 
     const idle = await evaluate(cdp, "window.HookedDebug.poseHealth()");
