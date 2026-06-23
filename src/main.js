@@ -426,6 +426,7 @@ function previewCharacterPose(overrides = {}) {
     flourishFlipDirection: state.flourishFlipDirection,
     gameOver: state.gameOver,
     finished: state.finished,
+    lastAppliedPose: poseReferenceState.lastApplied,
   };
   const savedMesh = {
     position: playerMesh.position.clone(),
@@ -482,6 +483,7 @@ function previewCharacterPose(overrides = {}) {
     state.flourishFlipDirection = savedState.flourishFlipDirection;
     state.gameOver = savedState.gameOver;
     state.finished = savedState.finished;
+    poseReferenceState.lastApplied = savedState.lastAppliedPose;
     playerMesh.position.copy(savedMesh.position);
     playerMesh.rotation.copy(savedMesh.rotation);
     playerMesh.scale.copy(savedMesh.scale);
@@ -1386,6 +1388,25 @@ window.HookedDebug = {
   exportPoseReferences() {
     return createCharacterPoseReferenceLibrary();
   },
+  setPoseReference(key, angles, options = {}) {
+    if (!key || !angles || typeof angles !== "object") return describeCharacterPoseReferences();
+    poseReferenceState.localPoses[key] = {
+      key,
+      savedAt: new Date().toISOString(),
+      source: options.source ?? "debug_override",
+      notes: options.notes ?? "",
+      angles: normalizeCharacterPoseAngles(angles),
+    };
+    rebuildCharacterPoseReferences();
+    if (options.persist !== false) saveCharacterPoseReferences();
+    return describeCharacterPoseReferences();
+  },
+  clearPoseReference(key, options = {}) {
+    if (key) delete poseReferenceState.localPoses[key];
+    rebuildCharacterPoseReferences();
+    if (options.persist !== false) saveCharacterPoseReferences();
+    return describeCharacterPoseReferences();
+  },
   previewPose(overrides) {
     return previewCharacterPose(overrides);
   },
@@ -2204,6 +2225,7 @@ const poseReferenceState = {
   projectPoses: {},
   localPoses: loadCharacterPoseReferences(),
   poses: {},
+  lastApplied: null,
 };
 rebuildCharacterPoseReferences();
 loadProjectCharacterPoseReferences();
@@ -2491,6 +2513,7 @@ function describeCharacterPoseSnapshot() {
     sideDepth: null,
     segments: {},
     jointAngles: {},
+    authoredPose: poseReferenceState.lastApplied,
   };
 
   for (const [key, pivot] of Object.entries(glbCharacter.pivots)) {
@@ -3009,10 +3032,50 @@ function getAuthoredPoseForCurrentState() {
   return poseReferenceState.poses[getCurrentPoseReferenceKey()] ?? null;
 }
 
-function applyAuthoredPoseReference(immediate = false) {
+const authoredPoseRopeProtectedKeys = new Set(["leftShoulder", "leftElbow", "leftWrist"]);
+
+function applyAuthoredPoseReference({
+  immediate = false,
+  preserveRopeArm = state.hookActive || state.grappled,
+  blend = 1,
+} = {}) {
   if (state.animatorMode) return;
   const pose = getAuthoredPoseForCurrentState();
-  if (pose?.angles) applyGlbPoseAngles(pose.angles, immediate);
+  if (!pose?.angles) {
+    poseReferenceState.lastApplied = null;
+    return null;
+  }
+
+  const applied = [];
+  const skipped = [];
+  const amount = THREE.MathUtils.clamp(blend, 0, 1);
+  for (const [key, angle] of Object.entries(pose.angles)) {
+    const pivot = glbCharacter.pivots[key];
+    if (!pivot || !Number.isFinite(angle)) {
+      skipped.push({ key, reason: "missing-pivot-or-angle" });
+      continue;
+    }
+    if (preserveRopeArm && authoredPoseRopeProtectedKeys.has(key)) {
+      skipped.push({ key, reason: "rope-arm-protected" });
+      continue;
+    }
+
+    const current = glbCharacter.currentAngles.get(pivot) ?? 0;
+    const target = clampPoseAngle(key, angle);
+    const blended = amount >= 0.999
+      ? target
+      : clampPoseAngle(key, current + normalizeAngle(target - current) * amount);
+    setGlbPivotAngle(pivot, blended, immediate);
+    applied.push({ key, angle: roundRigNumber(blended) });
+  }
+
+  poseReferenceState.lastApplied = {
+    key: pose.key ?? getCurrentPoseReferenceKey(),
+    source: pose.source ?? "unknown",
+    applied,
+    skipped,
+  };
+  return poseReferenceState.lastApplied;
 }
 
 function createPoseHandles() {
@@ -3729,6 +3792,9 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
       : config.glbPoseSmoothing * 0.9;
     glbPoseSmoothingAlpha = 1 - Math.exp(-Math.max(dt, 0.001) * smoothingRate);
     setGlbRagdollLitePose(now);
+    applyAuthoredPoseReference({
+      preserveRopeArm: state.hookActive || state.grappled,
+    });
     glbPoseSmoothingAlpha = 1;
     return;
   }

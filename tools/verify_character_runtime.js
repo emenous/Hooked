@@ -168,6 +168,7 @@ function summarizeHealth(health) {
     swing: health.snapshot?.swing,
     flourish: health.snapshot?.flourish,
     ribbon: health.snapshot?.ribbon,
+    authoredPose: health.snapshot?.authoredPose,
     segments: health.snapshot?.segments,
   };
 }
@@ -668,6 +669,80 @@ async function main() {
     });
     const throwHookRigidity = segmentRigidityReport(idle, [{ label: "throw-hook", health: throwHook }]);
     addResult(results, "throw-hook-limb-segments-remain-rigid", throwHookRigidity.ok, throwHookRigidity);
+
+    const authoredReleasePreview = `window.HookedDebug.previewPose({
+      hasLaunched: true,
+      grounded: false,
+      grappled: false,
+      hookActive: false,
+      velocity: [8, 0.4, 0],
+      facing: 1,
+      player: [4, 4, 0],
+      dt: 1,
+      now: 6.75
+    })`;
+    const authoredBefore = await evaluate(cdp, authoredReleasePreview);
+    await evaluate(cdp, `
+      window.HookedDebug.setPoseReference("release", {
+        rightWrist: 0.37,
+        rightElbow: 0.24
+      }, { persist: false, source: "runtime_verifier" })
+    `);
+    const authoredAfter = await evaluate(cdp, authoredReleasePreview);
+    await evaluate(cdp, `window.HookedDebug.clearPoseReference("release", { persist: false })`);
+    const authoredRightWrist = authoredAfter.snapshot?.jointAngles?.rightWrist ?? null;
+    const beforeRightWrist = authoredBefore.snapshot?.jointAngles?.rightWrist ?? null;
+    const authoredAppliedKeys = authoredAfter.snapshot?.authoredPose?.applied?.map((entry) => entry.key) ?? [];
+    addResult(results, "ragdoll-lite-authored-pose-applies", (
+      Math.abs((authoredRightWrist ?? Infinity) - 0.37) <= 0.03 &&
+      Math.abs((authoredRightWrist ?? 0) - (beforeRightWrist ?? 0)) >= 0.08 &&
+      authoredAppliedKeys.includes("rightWrist")
+    ), {
+      beforeRightWrist,
+      authoredRightWrist,
+      authoredPose: authoredAfter.snapshot?.authoredPose ?? null,
+      before: summarizeHealth(authoredBefore),
+      after: summarizeHealth(authoredAfter),
+    });
+
+    await evaluate(cdp, `
+      window.HookedDebug.setPoseReference("midSwing", {
+        leftShoulder: 2.2,
+        leftElbow: 1.2,
+        leftWrist: -0.4,
+        rightWrist: 0.31
+      }, { persist: false, source: "runtime_verifier" })
+    `);
+    const protectedHookPose = await evaluate(cdp, `
+      window.HookedDebug.previewPose({
+        hasLaunched: true,
+        grounded: false,
+        grappled: true,
+        hookActive: true,
+        velocity: [12, 0.4, 0],
+        facing: 1,
+        player: [4, 4, 0],
+        hookEnd: [7.1, 6.2, 0],
+        dt: 1,
+        now: 6.85
+      })
+    `);
+    await evaluate(cdp, `window.HookedDebug.clearPoseReference("midSwing", { persist: false })`);
+    const protectedSkippedKeys = protectedHookPose.snapshot?.authoredPose?.skipped?.map((entry) => entry.key) ?? [];
+    const protectedAppliedKeys = protectedHookPose.snapshot?.authoredPose?.applied?.map((entry) => entry.key) ?? [];
+    const protectedHookArm = checkByName(protectedHookPose, "left-arm-rope-alignment");
+    addResult(results, "hooked-authored-pose-preserves-left-rope-arm", (
+      protectedHookArm?.ok &&
+      protectedSkippedKeys.includes("leftShoulder") &&
+      protectedSkippedKeys.includes("leftElbow") &&
+      protectedSkippedKeys.includes("leftWrist") &&
+      protectedAppliedKeys.includes("rightWrist")
+    ), {
+      skipped: protectedHookPose.snapshot?.authoredPose?.skipped ?? [],
+      applied: protectedHookPose.snapshot?.authoredPose?.applied ?? [],
+      leftArm: protectedHookPose.snapshot?.leftArm ?? null,
+      rope: protectedHookPose.snapshot?.rope ?? null,
+    });
 
     const releaseForward = await evaluate(cdp, `
       window.HookedDebug.previewPose({

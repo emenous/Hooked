@@ -136,6 +136,14 @@ function main() {
     poseKeys: poseLibrary.poseKeys,
     error: poseLibrary.error ?? null,
   });
+  pushCheck(checks, "ragdoll-lite-applies-authored-pose-reference", (
+    /setGlbRagdollLitePose\(now\);\s*applyAuthoredPoseReference\(/.test(source) &&
+    source.includes("authoredPoseRopeProtectedKeys") &&
+    source.includes("leftShoulder") &&
+    source.includes("rope-arm-protected")
+  ), {
+    expected: "ragdollLite applies authored pose overlays while protecting the rope hand chain",
+  });
   pushCheck(checks, "skeleton-contract", audit.ok, {
     failures: audit.failures,
     warnings: audit.warnings,
