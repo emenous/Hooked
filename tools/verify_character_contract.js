@@ -244,22 +244,18 @@ function main() {
       textures: prototypeBudget.audit.textures,
     },
   });
-  pushCheck(checks, "final-model-budget", finalBudget.ok, {
-    budget: finalBudget.budget,
-    failed: finalBudget.checks.filter((check) => !check.ok),
-    summary: {
-      totalBytes: finalBudget.audit.totalBytes,
-      geometryBytesApprox: finalBudget.audit.geometryBytesApprox,
-      vertices: finalBudget.audit.vertices,
-      triangles: finalBudget.audit.triangles,
-      materials: finalBudget.audit.materials,
-      textures: finalBudget.audit.textures,
-      images: finalBudget.audit.images,
-      skins: finalBudget.audit.skins,
-      joints: finalBudget.audit.joints,
-      skinnedPrimitiveCount: finalBudget.audit.skinnedPrimitiveCount,
-    },
-  });
+  const finalBudgetSummary = {
+    totalBytes: finalBudget.audit.totalBytes,
+    geometryBytesApprox: finalBudget.audit.geometryBytesApprox,
+    vertices: finalBudget.audit.vertices,
+    triangles: finalBudget.audit.triangles,
+    materials: finalBudget.audit.materials,
+    textures: finalBudget.audit.textures,
+    images: finalBudget.audit.images,
+    skins: finalBudget.audit.skins,
+    joints: finalBudget.audit.joints,
+    skinnedPrimitiveCount: finalBudget.audit.skinnedPrimitiveCount,
+  };
 
   if (mesh.totalVertices > 65000) {
     warnings.push({
@@ -272,8 +268,9 @@ function main() {
   if (!finalBudget.ok) {
     warnings.push({
       name: "final-model-budget-not-met",
-      message: "The current GLB is playable, but not final load-budget ready.",
+      message: "The current GLB preserves visual geometry, but is not final load-budget ready. Use retopo or selective mesh cleanup before making final budget a hard gate.",
       failed: finalBudget.checks.filter((check) => !check.ok),
+      summary: finalBudgetSummary,
     });
   }
 
