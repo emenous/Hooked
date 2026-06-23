@@ -215,6 +215,10 @@ const ribbonAnchorLiftOffset = 0.02;
 const swingPoseTuning = {
   leftArmRopeAimOffset: 0.29,
   backwardLeftArmRopeAimScale: 0.5,
+  freeArmTrail: 0.74,
+  freeArmRopeCounter: 0.26,
+  freeArmLiftCounter: 0.18,
+  freeArmMemoryRate: 7.5,
   swingFootClockwise: 0.52,
   airborneFootClockwise: 0.32,
   tuckFootClockwise: 0.14,
@@ -298,6 +302,7 @@ const state = {
   aimEnd: new THREE.Vector3(),
   aimDirection: new THREE.Vector3(1, 0.35, 0),
   ropeLength: config.minRopeLength,
+  freeArmSwingMemory: 0,
   anchor: null,
   lastReleasedAnchor: null,
   lastFlourishAt: -100,
@@ -383,6 +388,7 @@ function previewCharacterPose(overrides = {}) {
     anchor: state.anchor,
     playerAnimation: state.playerAnimation,
     facing: state.facing,
+    freeArmSwingMemory: state.freeArmSwingMemory,
     flourishSpinRemaining: state.flourishSpinRemaining,
     flourishFlipDirection: state.flourishFlipDirection,
     gameOver: state.gameOver,
@@ -413,6 +419,7 @@ function previewCharacterPose(overrides = {}) {
     state.hookActive = overrides.hookActive ?? state.hookActive;
     state.anchor = overrides.anchor ?? null;
     state.facing = overrides.facing ?? state.facing;
+    state.freeArmSwingMemory = overrides.freeArmSwingMemory ?? 0;
     state.flourishSpinRemaining = overrides.flourishSpinRemaining ?? 0;
     state.flourishFlipDirection = overrides.flourishFlipDirection ?? state.flourishFlipDirection;
     state.gameOver = overrides.gameOver ?? false;
@@ -440,6 +447,7 @@ function previewCharacterPose(overrides = {}) {
     state.anchor = savedState.anchor;
     state.playerAnimation = savedState.playerAnimation;
     state.facing = savedState.facing;
+    state.freeArmSwingMemory = savedState.freeArmSwingMemory;
     state.flourishSpinRemaining = savedState.flourishSpinRemaining;
     state.flourishFlipDirection = savedState.flourishFlipDirection;
     state.gameOver = savedState.gameOver;
@@ -2869,6 +2877,13 @@ function getLoadedLeftArmAimOffset() {
   return swingPoseTuning.leftArmRopeAimOffset * (state.facing < 0 ? swingPoseTuning.backwardLeftArmRopeAimScale : 1);
 }
 
+function updateFreeArmSwingMemory(target, dt) {
+  const safeDt = Math.max(dt, 0.001);
+  const alpha = 1 - Math.exp(-safeDt * swingPoseTuning.freeArmMemoryRate);
+  state.freeArmSwingMemory = THREE.MathUtils.lerp(state.freeArmSwingMemory, target, alpha);
+  return state.freeArmSwingMemory;
+}
+
 function getFootClockwiseTuning({ hooked, airborne, tuck }) {
   const base = hooked
     ? swingPoseTuning.swingFootClockwise
@@ -2876,6 +2891,34 @@ function getFootClockwiseTuning({ hooked, airborne, tuck }) {
       ? swingPoseTuning.airborneFootClockwise
       : 0;
   return THREE.MathUtils.lerp(base, swingPoseTuning.tuckFootClockwise, THREE.MathUtils.smootherstep(tuck, 0, 1));
+}
+
+function getFreeArmSwingTarget({
+  rightArmLength,
+  swingFlow,
+  ropeX,
+  fallAmount,
+  riseAmount,
+  tuck = 0,
+}) {
+  const motion = clampJoint(swingFlow, -1, 1);
+  const counterBalance = clampJoint(
+    -ropeX * swingPoseTuning.freeArmRopeCounter
+      + (riseAmount - fallAmount) * swingPoseTuning.freeArmLiftCounter,
+    -0.36,
+    0.36,
+  );
+  const swingAmount = Math.abs(motion);
+  const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
+  return {
+    x: clampJoint(
+      THREE.MathUtils.lerp(-motion * swingPoseTuning.freeArmTrail + counterBalance, -0.04, compact),
+      -0.7,
+      0.62,
+    ),
+    y: -rightArmLength * THREE.MathUtils.lerp(0.54 - swingAmount * 0.18 + fallAmount * 0.1, 0.13, compact),
+    bend: -1,
+  };
 }
 
 function captureCurrentGlbPoseAngles() {
@@ -3390,12 +3433,13 @@ function setGlbRelativePose(now) {
       y: ropeY * leftArmLength * 0.99,
       bend: 0,
     };
-    const balanceReach = clampJoint(Math.abs(swingFlow), 0, 1);
-    rightHandTarget = {
-      x: -ropeX * 0.18 - swingFlow * 0.34 - 0.12,
-      y: -rightArmLength * (0.5 + fallTuck * 0.12) + ropeY * 0.14 + balanceReach * 0.08,
-      bend: -1,
-    };
+    rightHandTarget = getFreeArmSwingTarget({
+      rightArmLength,
+      swingFlow: updateFreeArmSwingMemory(swingFlow, config.physicsStep),
+      ropeX,
+      fallAmount: fallTuck,
+      riseAmount: Math.max(swingArcLift, 0),
+    });
   } else if (airborne) {
     leftHandTarget = { x: 0.14 + swing * 0.12, y: -leftArmLength * 0.68 + fallTuck * 0.08, bend: 1 };
     rightHandTarget = { x: -0.2 - swing * 0.14, y: -rightArmLength * 0.62 + fallTuck * 0.08, bend: -1 };
@@ -3469,7 +3513,7 @@ function setGlbRelativePose(now) {
   setGlbPivotAngle(pivots.rightWrist, clampAngle(-rightArm.lowerWorld * 0.08, glbJointLimits.wrist));
 }
 
-function setGlbRagdollLitePose(now) {
+function setGlbRagdollLitePose(now, dt = config.physicsStep) {
   const pivots = glbCharacter.pivots;
   const idleBreath = !state.hasLaunched || state.grounded ? Math.sin(now * 3.2) : 0;
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
@@ -3488,6 +3532,7 @@ function setGlbRagdollLitePose(now) {
   const rollTuck = state.flourishSpinRemaining > 0 ? THREE.MathUtils.smootherstep(tuck, 0, 1) : 0;
 
   if (!airborne && !hooked) {
+    updateFreeArmSwingMemory(0, dt);
     setGlbIdlePose(pivots, idleBreath, 0, idleBreath * 0.012, idleBreath * 0.018);
     return;
   }
@@ -3587,17 +3632,24 @@ function setGlbRagdollLitePose(now) {
     setGlbPivotAngle(pivots.leftWrist, clampAngle(-leftArm.lowerWorld * 0.06, glbJointLimits.wrist));
   }
 
-  const balanceReach = Math.abs(swingFlow);
+  const rightHandTarget = getFreeArmSwingTarget({
+    rightArmLength,
+    swingFlow: updateFreeArmSwingMemory(swingFlow, dt),
+    ropeX,
+    fallAmount,
+    riseAmount,
+    tuck: rollTuck,
+  });
   const rightArm = setGlbTwoBonePose({
     rootPivot: pivots.rightShoulder,
     midPivot: pivots.rightElbow,
     endPivot: pivots.rightWrist,
     upperName: "rightShoulder",
     lowerName: "rightElbow",
-    targetX: clampJoint(THREE.MathUtils.lerp(-swingFlow * 0.56 - ropeX * 0.22, -0.04, rollTuck), -0.62, 0.52),
-    targetY: -rightArmLength * THREE.MathUtils.lerp(0.56 + fallAmount * 0.14 - balanceReach * 0.12, 0.13, rollTuck),
+    targetX: rightHandTarget.x,
+    targetY: rightHandTarget.y,
     parentWorldAngle: chestWorld,
-    bendSign: -1,
+    bendSign: rightHandTarget.bend,
     upperLimit: glbJointLimits.shoulder,
     lowerLimit: glbJointLimits.elbow,
   });
@@ -3674,7 +3726,7 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
       ? config.glbPoseSmoothing * 1.25
       : config.glbPoseSmoothing * 0.9;
     glbPoseSmoothingAlpha = 1 - Math.exp(-Math.max(dt, 0.001) * smoothingRate);
-    setGlbRagdollLitePose(now);
+    setGlbRagdollLitePose(now, dt);
     applyAuthoredPoseReference({
       preserveRopeArm: state.hookActive || state.grappled,
     });
