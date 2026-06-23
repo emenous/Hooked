@@ -244,6 +244,22 @@ function main() {
       textures: prototypeBudget.audit.textures,
     },
   });
+  pushCheck(checks, "final-model-budget", finalBudget.ok, {
+    budget: finalBudget.budget,
+    failed: finalBudget.checks.filter((check) => !check.ok),
+    summary: {
+      totalBytes: finalBudget.audit.totalBytes,
+      geometryBytesApprox: finalBudget.audit.geometryBytesApprox,
+      vertices: finalBudget.audit.vertices,
+      triangles: finalBudget.audit.triangles,
+      materials: finalBudget.audit.materials,
+      textures: finalBudget.audit.textures,
+      images: finalBudget.audit.images,
+      skins: finalBudget.audit.skins,
+      joints: finalBudget.audit.joints,
+      skinnedPrimitiveCount: finalBudget.audit.skinnedPrimitiveCount,
+    },
+  });
 
   if (mesh.totalVertices > 65000) {
     warnings.push({
