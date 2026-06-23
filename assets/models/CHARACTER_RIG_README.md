@@ -103,11 +103,11 @@ node tools/check_character_model_budget.js assets/models/m_character_skeletal_te
 
 Latest numbers:
 
-- File size: 8,671,504 bytes.
+- File size: 8,666,864 bytes.
 - Meshes: 19.
 - Primitives: 21.
-- Materials: 21.
-- Textures: 63.
+- Materials: 2.
+- Textures: 4.
 - Embedded images: 4, about 2.7 MB total.
 - Geometry payload: about 6.0 MB.
 - Vertices: 109,353.
@@ -122,6 +122,14 @@ Highest-density pieces:
 - shins, feet, and hands are also heavy for their on-screen size.
 
 This is usable for prototyping, but it is not the final model budget. The AI-generated mesh carries a lot of noisy surface detail that does not read clearly at gameplay distance.
+
+The current runtime GLB has already had duplicate texture/material references collapsed with:
+
+```bash
+node tools/dedupe_glb_materials.js assets/models/m_character_skeletal_textures_1k.glb assets/models/m_character_skeletal_textures_1k.glb
+```
+
+That cleanup is metadata-only: it preserves the skeleton, skinning, meshes, textures, and animations, but reduces repeated glTF material/texture records. The remaining final-budget failures are geometry/file-size related.
 
 ## Texture-Only Optimization Floor
 
