@@ -95,8 +95,10 @@ If the diagnostic clip bends a part the wrong way, fix the bone rest axis or sou
 Current audited game asset:
 
 ```bash
+node tools/verify_character_contract.js assets/models/m_character_skeletal_textures_1k.glb
 node tools/audit_glb_payload.js assets/models/m_character_skeletal_textures_1k.glb
 node tools/audit_glb_mesh_breakdown.js assets/models/m_character_skeletal_textures_1k.glb
+node tools/check_character_model_budget.js assets/models/m_character_skeletal_textures_1k.glb --budget prototype --strict
 ```
 
 Latest numbers:
@@ -121,6 +123,16 @@ Highest-density pieces:
 
 This is usable for prototyping, but it is not the final model budget. The AI-generated mesh carries a lot of noisy surface detail that does not read clearly at gameplay distance.
 
+## Texture-Only Optimization Floor
+
+The current 1K texture asset is already mostly geometry-bound. A non-destructive texture resize test from the larger skeletal source measured:
+
+- 512px embedded textures: about 6.85 MB total.
+- 256px embedded textures: about 6.26 MB total.
+- Geometry/skin/animation payload remains about 5.97 MB either way.
+
+So dropping texture resolution further can help a little, but it cannot solve the no-load-time target by itself. The next meaningful reduction needs mesh simplification or a clean remodel of the armor/body pieces while preserving the same named joints and anchors.
+
 ## Target Remodel Budget
 
 For the next clean Sling model pass, aim for:
@@ -133,6 +145,15 @@ For the next clean Sling model pass, aim for:
 - No hidden cameras, lights, backup meshes, or source reference objects in the exported GLB.
 
 The safest rebuild path is to keep this AI mesh as a visual reference, rebuild the hard-surface armor as clean modular pieces in Blender, then bind those pieces to the existing named armature.
+
+Before replacing the runtime GLB with a rebuilt candidate, run:
+
+```bash
+node tools/verify_character_contract.js path/to/candidate.glb
+node tools/check_character_model_budget.js path/to/candidate.glb --budget final
+```
+
+The contract verifier enforces the playable prototype budget. Only use `--strict` with the final budget once the candidate is meant to be production-ready. During rebuild tests, the final budget report is still useful when it fails because it shows which part of the payload is holding the model back.
 
 ## Retargeting Premade Animation Clips
 

@@ -85,6 +85,8 @@ function main() {
   const audit = runJsonTool("audit_character_skeleton.js", [target]);
   const axes = runJsonTool("diagnose_character_axes.js", [target]);
   const mesh = runJsonTool("audit_glb_mesh_breakdown.js", [target]);
+  const prototypeBudget = runJsonTool("check_character_model_budget.js", [target, "--budget", "prototype"]);
+  const finalBudget = runJsonTool("check_character_model_budget.js", [target, "--budget", "final"]);
   const checks = [];
   const warnings = [];
 
@@ -160,6 +162,18 @@ function main() {
   pushCheck(checks, "old-placeholder-character-renderer-removed", placeholderSymbols.length === 0, {
     found: [...new Set(placeholderSymbols)],
   });
+  pushCheck(checks, "prototype-model-budget", prototypeBudget.ok, {
+    budget: prototypeBudget.budget,
+    failed: prototypeBudget.checks.filter((check) => !check.ok),
+    summary: {
+      totalBytes: prototypeBudget.audit.totalBytes,
+      geometryBytesApprox: prototypeBudget.audit.geometryBytesApprox,
+      vertices: prototypeBudget.audit.vertices,
+      triangles: prototypeBudget.audit.triangles,
+      materials: prototypeBudget.audit.materials,
+      textures: prototypeBudget.audit.textures,
+    },
+  });
 
   if (mesh.totalVertices > 65000) {
     warnings.push({
@@ -167,6 +181,13 @@ function main() {
       message: "The GLB is usable, but high-poly for a no-load-time target. Rebuild/decimate later.",
       totalVertices: mesh.totalVertices,
       totalTriangles: mesh.totalTriangles,
+    });
+  }
+  if (!finalBudget.ok) {
+    warnings.push({
+      name: "final-model-budget-not-met",
+      message: "The current GLB is playable, but not final load-budget ready.",
+      failed: finalBudget.checks.filter((check) => !check.ok),
     });
   }
 
