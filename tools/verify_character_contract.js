@@ -8,6 +8,18 @@ const targetArg = process.argv[2] ?? defaultTarget;
 const target = path.normalize(targetArg);
 const sourcePath = path.join(repoRoot, "src", "main.js");
 const poseReferencePath = path.join(repoRoot, "data", "character_pose_references.json");
+const expectedProjectPoseKeys = [
+  "idleHang",
+  "jumpLaunch",
+  "throwHook",
+  "midSwing",
+  "downSwing",
+  "upSwing",
+  "falling",
+  "release",
+  "midFlip",
+  "barrelRoll",
+];
 
 function normalizeSlash(value) {
   return path.normalize(value.replace(/^\.\//, ""));
@@ -135,6 +147,20 @@ function main() {
     poseMode: poseLibrary.poseMode,
     poseKeys: poseLibrary.poseKeys,
     error: poseLibrary.error ?? null,
+  });
+  const missingProjectPoseKeys = expectedProjectPoseKeys
+    .filter((key) => !poseLibrary.poseKeys?.includes(key));
+  const posesWithInvalidBlend = Object.entries(poseLibrary.poses ?? {})
+    .filter(([, pose]) => !Number.isFinite(pose?.blend) || pose.blend < 0 || pose.blend > 1)
+    .map(([key, pose]) => ({ key, blend: pose?.blend ?? null }));
+  pushCheck(checks, "project-baseline-pose-keys", (
+    missingProjectPoseKeys.length === 0 &&
+    posesWithInvalidBlend.length === 0
+  ), {
+    expected: expectedProjectPoseKeys,
+    poseKeys: poseLibrary.poseKeys,
+    missing: missingProjectPoseKeys,
+    invalidBlend: posesWithInvalidBlend,
   });
   pushCheck(checks, "ragdoll-lite-applies-authored-pose-reference", (
     /setGlbRagdollLitePose\(now\);\s*applyAuthoredPoseReference\(/.test(source) &&

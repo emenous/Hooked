@@ -174,7 +174,9 @@ Build-mode workflow:
 
 Project pose references load first. Browser-local saves override matching project keys while authoring. `Reset pose` removes the local override for the current animation state and falls back to the committed project pose if one exists.
 
-In the default `ragdollLite` solver, authored pose references are applied as an overlay after the physics pose is calculated. When the rope is active, `leftShoulder`, `leftElbow`, and `leftWrist` are protected so the grapple hand stays aligned with the rope direction.
+In the default `ragdollLite` solver, authored pose references are applied as a blendable overlay after the physics pose is calculated. Project poses should use lower `blend` values when they are just guiding silhouette so swing velocity still drives the motion. Saved local poses default to `blend: 1` because they are usually exact authoring tests. When the rope is active, `leftShoulder`, `leftElbow`, and `leftWrist` are protected so the grapple hand stays aligned with the rope direction.
+
+The committed baseline library currently covers `idleHang`, `jumpLaunch`, `throwHook`, `midSwing`, `downSwing`, `upSwing`, `falling`, `release`, `midFlip`, and `barrelRoll`.
 
 ## Retargeting Premade Animation Clips
 

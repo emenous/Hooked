@@ -5,6 +5,18 @@ const path = require("path");
 
 const defaultUrl = "http://127.0.0.1:5173/";
 const targetUrl = process.argv[2] ?? defaultUrl;
+const expectedProjectPoseKeys = [
+  "idleHang",
+  "jumpLaunch",
+  "throwHook",
+  "midSwing",
+  "downSwing",
+  "upSwing",
+  "falling",
+  "release",
+  "midFlip",
+  "barrelRoll",
+];
 const chromeCandidates = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -175,6 +187,15 @@ function summarizeHealth(health) {
 
 function addResult(results, name, ok, details = {}) {
   results.push({ name, ok: Boolean(ok), ...details });
+}
+
+function projectPoseApplied(health, expectedKey) {
+  const authoredPose = health?.snapshot?.authoredPose;
+  return (
+    authoredPose?.key === expectedKey &&
+    authoredPose.source === "project_baseline" &&
+    Number.isFinite(authoredPose.blend)
+  );
 }
 
 function summarizeSwingSample(health, label) {
@@ -407,6 +428,14 @@ async function main() {
       mergedKeys: poseReferences.mergedKeys,
       error: poseReferences.projectError,
     });
+    const missingProjectPoseKeys = expectedProjectPoseKeys
+      .filter((key) => !poseReferences.projectKeys.includes(key));
+    addResult(results, "project-baseline-pose-keys-loaded", missingProjectPoseKeys.length === 0, {
+      expected: expectedProjectPoseKeys,
+      projectKeys: poseReferences.projectKeys,
+      mergedKeys: poseReferences.mergedKeys,
+      missing: missingProjectPoseKeys,
+    });
 
     const rig = await evaluate(cdp, "window.HookedDebug.characterRig()");
     addResult(results, "runtime-glb-loaded", rig.loaded && rig.skinnedMeshes >= 1, {
@@ -417,6 +446,9 @@ async function main() {
 
     const idle = await evaluate(cdp, "window.HookedDebug.poseHealth()");
     addResult(results, "idle-pose-health", idle.ok, { health: summarizeHealth(idle) });
+    addResult(results, "idle-project-pose-applied", projectPoseApplied(idle, "idleHang"), {
+      authoredPose: idle.snapshot?.authoredPose ?? null,
+    });
     const idleRibbon = checkByName(idle, "ribbon-anchor-attached");
     addResult(results, "idle-ribbon-anchor-attached", idleRibbon?.ok, {
       ribbon: idle.snapshot?.ribbon ?? null,
@@ -451,6 +483,9 @@ async function main() {
     `);
     const fallingSummary = summarizeFallSample(falling);
     addResult(results, "falling-pose-health", falling.ok, { health: summarizeHealth(falling), falling: fallingSummary });
+    addResult(results, "falling-project-pose-applied", projectPoseApplied(falling, "falling"), {
+      authoredPose: falling.snapshot?.authoredPose ?? null,
+    });
     addResult(results, "falling-animation-selected", falling.snapshot?.animation === "falling", { falling: fallingSummary });
     addResult(results, "falling-knees-do-not-bend-forward", hasBackwardKnees(falling), {
       legs: falling.snapshot?.legs ?? null,
@@ -480,6 +515,9 @@ async function main() {
     addResult(results, "jump-launch-pose-health", jumpLaunch.ok, {
       health: summarizeHealth(jumpLaunch),
       jumpLaunch: jumpLaunchSummary,
+    });
+    addResult(results, "jump-launch-project-pose-applied", projectPoseApplied(jumpLaunch, "jumpLaunch"), {
+      authoredPose: jumpLaunch.snapshot?.authoredPose ?? null,
     });
     addResult(results, "jump-launch-animation-selected", jumpLaunch.snapshot?.animation === "jumpLaunch", {
       jumpLaunch: jumpLaunchSummary,
@@ -584,6 +622,13 @@ async function main() {
       forwardHealth: summarizeHealth(forwardMidSwing),
       backwardHealth: summarizeHealth(backwardMidSwing),
     });
+    addResult(results, "mid-swing-project-pose-applied", (
+      projectPoseApplied(forwardMidSwing, "midSwing") &&
+      projectPoseApplied(backwardMidSwing, "midSwing")
+    ), {
+      forwardAuthoredPose: forwardMidSwing.snapshot?.authoredPose ?? null,
+      backwardAuthoredPose: backwardMidSwing.snapshot?.authoredPose ?? null,
+    });
     addResult(results, "mid-swing-animation-selected", forwardMidSwing.snapshot?.animation === "midSwing" && backwardMidSwing.snapshot?.animation === "midSwing", {
       forward: forwardMidSwingSummary,
       backward: backwardMidSwingSummary,
@@ -651,6 +696,9 @@ async function main() {
     addResult(results, "throw-hook-pose-health", throwHook.ok, {
       health: summarizeHealth(throwHook),
       hook: throwHookSummary,
+    });
+    addResult(results, "throw-hook-project-pose-applied", projectPoseApplied(throwHook, "throwHook"), {
+      authoredPose: throwHook.snapshot?.authoredPose ?? null,
     });
     addResult(results, "throw-hook-animation-selected", throwHook.snapshot?.animation === "throwHook", {
       hook: throwHookSummary,
@@ -782,6 +830,13 @@ async function main() {
       forwardHealth: summarizeHealth(releaseForward),
       backwardHealth: summarizeHealth(releaseBackward),
     });
+    addResult(results, "release-project-pose-applied", (
+      projectPoseApplied(releaseForward, "release") &&
+      projectPoseApplied(releaseBackward, "release")
+    ), {
+      forwardAuthoredPose: releaseForward.snapshot?.authoredPose ?? null,
+      backwardAuthoredPose: releaseBackward.snapshot?.authoredPose ?? null,
+    });
     addResult(results, "release-animation-selected", releaseForward.snapshot?.animation === "release" && releaseBackward.snapshot?.animation === "release", {
       forward: releaseForwardSummary,
       backward: releaseBackwardSummary,
@@ -819,10 +874,22 @@ async function main() {
       { label: "late", health: swingFinal },
     ];
     const swingSequence = summarizeSwingSequence(swingSamples);
+    const swingAuthoredSamples = swingSamples.map(({ label, health }) => ({
+      label,
+      animation: health.snapshot?.animation ?? null,
+      authoredPose: health.snapshot?.authoredPose ?? null,
+    }));
     const swingArm = checkByName(swing, "left-arm-rope-alignment");
     const ropeOrigin = checkByName(swing, "rope-origin-left-wrist");
     addResult(results, "hooked-swing-pose-health", swing.ok, { health: summarizeHealth(swing) });
     addResult(results, "hooked-swing-sequence-health", swingSequence.allHealthy, { swingSequence });
+    addResult(results, "hooked-swing-project-poses-applied", swingAuthoredSamples.every((sample) => (
+      ["midSwing", "downSwing", "upSwing"].includes(sample.authoredPose?.key) &&
+      sample.authoredPose.source === "project_baseline" &&
+      Number.isFinite(sample.authoredPose.blend)
+    )), {
+      samples: swingAuthoredSamples,
+    });
     addResult(results, "hooked-left-arm-follows-rope", swingArm?.ok && (swing.snapshot?.leftArm?.ropeAlignmentErrorDeg ?? Infinity) <= 6, {
       errorDeg: swing.snapshot?.leftArm?.ropeAlignmentErrorDeg ?? null,
       leftArm: swing.snapshot?.leftArm ?? null,
@@ -868,6 +935,13 @@ async function main() {
     const tuckCheck = checkByName(flourish, "flourish-tuck-compactness");
     addResult(results, "flourish-tuck-active", flourish.snapshot?.flourish?.active && flourish.snapshot.flourish.tuck > 0.75, {
       flourish: flourish.snapshot?.flourish ?? null,
+    });
+    addResult(results, "flourish-project-tuck-pose-applied", (
+      ["midFlip", "barrelRoll"].includes(flourish.snapshot?.authoredPose?.key) &&
+      flourish.snapshot?.authoredPose?.source === "project_baseline"
+    ), {
+      authoredPose: flourish.snapshot?.authoredPose ?? null,
+      animation: flourish.snapshot?.animation ?? null,
     });
     addResult(results, "flourish-tuck-compact", tuckCheck?.ok && (flourish.snapshot?.flourish?.compactRadius ?? Infinity) <= 1.35, {
       compactRadius: flourish.snapshot?.flourish?.compactRadius ?? null,

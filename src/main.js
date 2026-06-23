@@ -4,7 +4,7 @@ import { EffectComposer } from "https://unpkg.com/three@0.165.0/examples/jsm/pos
 import { RenderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "https://unpkg.com/three@0.165.0/examples/jsm/postprocessing/ShaderPass.js";
 
-const GAME_VERSION = "v0.5.66";
+const GAME_VERSION = "v0.5.67";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -1395,6 +1395,7 @@ window.HookedDebug = {
       savedAt: new Date().toISOString(),
       source: options.source ?? "debug_override",
       notes: options.notes ?? "",
+      blend: Number.isFinite(options.blend) ? THREE.MathUtils.clamp(options.blend, 0, 1) : 1,
       angles: normalizeCharacterPoseAngles(angles),
     };
     rebuildCharacterPoseReferences();
@@ -2949,6 +2950,9 @@ function normalizeCharacterPoseLibrary(payload) {
       savedAt: typeof pose.savedAt === "string" ? pose.savedAt : null,
       source: typeof pose.source === "string" ? pose.source : "project",
       notes: typeof pose.notes === "string" ? pose.notes : "",
+      blend: Number.isFinite(pose.blend)
+        ? THREE.MathUtils.clamp(pose.blend, 0, 1)
+        : 1,
       angles,
     };
   }
@@ -3037,7 +3041,7 @@ const authoredPoseRopeProtectedKeys = new Set(["leftShoulder", "leftElbow", "lef
 function applyAuthoredPoseReference({
   immediate = false,
   preserveRopeArm = state.hookActive || state.grappled,
-  blend = 1,
+  blend = null,
 } = {}) {
   if (state.animatorMode) return;
   const pose = getAuthoredPoseForCurrentState();
@@ -3048,7 +3052,11 @@ function applyAuthoredPoseReference({
 
   const applied = [];
   const skipped = [];
-  const amount = THREE.MathUtils.clamp(blend, 0, 1);
+  const amount = THREE.MathUtils.clamp(
+    Number.isFinite(blend) ? blend : pose.blend ?? 1,
+    0,
+    1,
+  );
   for (const [key, angle] of Object.entries(pose.angles)) {
     const pivot = glbCharacter.pivots[key];
     if (!pivot || !Number.isFinite(angle)) {
@@ -3072,6 +3080,7 @@ function applyAuthoredPoseReference({
   poseReferenceState.lastApplied = {
     key: pose.key ?? getCurrentPoseReferenceKey(),
     source: pose.source ?? "unknown",
+    blend: roundRigNumber(amount),
     applied,
     skipped,
   };
@@ -3150,6 +3159,7 @@ function saveCurrentCharacterPose() {
     key,
     savedAt: new Date().toISOString(),
     source: "local_animator_override",
+    blend: 1,
     angles: normalizeCharacterPoseAngles(angles),
   };
   rebuildCharacterPoseReferences();
@@ -3184,6 +3194,7 @@ function createCharacterPoseReferenceLibrary() {
       savedAt: pose.savedAt ?? null,
       source,
       notes: pose.notes ?? "",
+      blend: Number.isFinite(pose.blend) ? pose.blend : 1,
       angles: normalizeCharacterPoseAngles(pose.angles),
     };
   }
