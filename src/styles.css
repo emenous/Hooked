@@ -42,8 +42,6 @@ body {
   position: relative;
   background:
     linear-gradient(180deg, rgba(35, 52, 76, 0.96), rgba(26, 34, 50, 0.98)),
-    radial-gradient(circle at 20% 15%, rgba(101, 196, 214, 0.26), transparent 30%),
-    radial-gradient(circle at 78% 28%, rgba(255, 126, 74, 0.16), transparent 32%),
     #162333;
 }
 
@@ -95,9 +93,7 @@ body {
   height: min(46vh, 520px);
   z-index: 9;
   pointer-events: none;
-  background:
-    linear-gradient(180deg, transparent 0%, rgba(2, 5, 7, 0.1) 35%, rgba(2, 5, 7, 0.58) 78%, rgba(1, 3, 5, 0.9) 100%),
-    radial-gradient(ellipse at 50% 100%, rgba(0, 0, 0, 0.72), transparent 66%);
+  background: linear-gradient(180deg, transparent 0%, rgba(2, 5, 7, 0.1) 35%, rgba(2, 5, 7, 0.58) 78%, rgba(1, 3, 5, 0.9) 100%);
   mix-blend-mode: multiply;
 }
 
