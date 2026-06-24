@@ -315,18 +315,17 @@
           <span class="brand-mark" aria-hidden="true"></span>
           <span>Hooked</span>
         </div>
-        <a class="play-link" href="./index.html">Play Now</a>
+        <a class="play-link" href="./index.html?v=version-0-5-74">Play Now</a>
       </div>
     </header>
 
     <main>
       <section class="hero">
-        <p class="eyebrow">Prototype Update v0.4.1</p>
+        <p class="eyebrow">Prototype Update v0.5.74</p>
         <h1>Patch Notes</h1>
         <p class="summary">
-          This consolidated update covers the biggest improvements from the recent Hooked prototype passes:
-          swing feel, slow motion, build mode, character rigging, visual direction, scoring, mobile fixes,
-          and cross-system consistency.
+          Major changes from the latest Hooked prototype pass: cleaner swing readability, a game-ready
+          skeletal character path, stronger grapple feedback, leaner controls, and focused bug fixes.
         </p>
         <nav class="filters" aria-label="Patch note filters">
           <span class="active">2026</span>
@@ -341,41 +340,26 @@
 
       <section class="patch-list">
         <article class="patch-post">
-          <p class="date">June 20, 2026</p>
-          <h2>Hooked Prototype Update - v0.4.1</h2>
+          <p class="date">June 24, 2026</p>
+          <h2>Hooked Prototype Update - v0.5.74</h2>
           <p class="note">
-            Hooked is now a more complete swing-and-stunt testbed. The build adds a finish flow,
-            score/multiplier scaffolding, slow-motion rings, a richer cyber-steampunk backdrop,
-            and a dedicated character rig editor for building the final animated player.
+            This build focuses on getting the prototype into a cleaner, more playable state before
+            the next character-model pass. The biggest work is around the skeletal player, grapple
+            visuals, camera control, start-platform readability, and removing systems that were adding
+            friction instead of helping the game feel better.
           </p>
 
           <section class="category" id="gameplay">
             <div class="category-icon" aria-hidden="true">G</div>
             <div class="category-body">
               <h3>Gameplay and Movement</h3>
-              <h4>Grapple Feel</h4>
+              <h4>Grapple and Camera</h4>
               <ul>
-                <li>Improved anchor selection to favor forward momentum and reduce accidental backward grabs.</li>
-                <li>Tuned rope extension, release pop, damping, launch flow, and re-grab behavior.</li>
-                <li>Added a bright cyber rope with a white-hot center, pulsing energy, crackle, and physics sparks.</li>
-                <li>Added a build-mode grapple range circle around the player for easier node placement.</li>
-              </ul>
-
-              <h4>Slow Motion and Flourish</h4>
-              <ul>
-                <li>Added slow-motion power-up rings that trigger after release instead of wasting time while attached to a grapple.</li>
-                <li>Changed slow motion so its timer only counts down while the player is airborne and not connected.</li>
-                <li>Slowed player movement during slow motion while allowing flourish tricks to play faster relative to the slowed world.</li>
-                <li>Locked flourish input so repeated clicks no longer restart the flip animation mid-flourish.</li>
-                <li>Standardized the current flourish to a tucked backflip.</li>
-              </ul>
-
-              <h4>Scoring and Finish</h4>
-              <ul>
-                <li>Added score, fail counter, highest multiplier, multiplier timer, and score-rank placeholders.</li>
-                <li>Added the Level Complete panel when landing on the yellow-topped finish building.</li>
-                <li>Added a bottom-center version label showing the current prototype version.</li>
-                <li>Added the celebratory "HEY JEREMY!!!!" scoreboard callout with physics-based fireworks.</li>
+                <li>Added manual gameplay zoom on the left side of the screen with mouse-wheel sync.</li>
+                <li>Manual zoom now persists through pause and player death instead of being reset unexpectedly.</li>
+                <li>Improved grapple targeting rules so the player cannot target falling anchors or invalid downward grabs.</li>
+                <li>Added limp chain/rope behavior for failed grapples while falling.</li>
+                <li>Refined the plasma grapple beam with a brighter cyan core, crackle, and lighter pixel-noise treatment.</li>
               </ul>
             </div>
           </section>
@@ -384,13 +368,12 @@
             <div class="category-icon" aria-hidden="true">B</div>
             <div class="category-body">
               <h3>Build Mode and Level Editing</h3>
-              <h4>Object Tools</h4>
+              <h4>Animation Tools</h4>
               <ul>
-                <li>Added build mode controls that only appear while paused.</li>
-                <li>Added add, remove, drag, and place support for anchors, obstacles, bonus rings, slow-motion rings, and the finish line.</li>
-                <li>Added local layout persistence and reset controls for level iteration.</li>
-                <li>Added zoom in, zoom out, and birds-eye view controls for reviewing the whole stage.</li>
-                <li>Adjusted build UI layout so editor controls do not cover core HUD panels as heavily.</li>
+                <li>Added an in-game character pose/animation editor for inspecting and adjusting the current paused pose.</li>
+                <li>Added pose frame saving, clear-frame controls, rotate controls, and undo support for animation tweaking.</li>
+                <li>Added limited animator camera orbit so 2.5D poses can be inspected from better angles.</li>
+                <li>Build mode now freezes the ribbon simulation so the attachment point is easier to inspect.</li>
               </ul>
             </div>
           </section>
@@ -399,21 +382,13 @@
             <div class="category-icon" aria-hidden="true">M</div>
             <div class="category-body">
               <h3>Character and Rigging</h3>
-              <h4>Player Model</h4>
+              <h4>Skeletal Player</h4>
               <ul>
-                <li>Recolored the placeholder character closer to the gold-and-black "m" character direction.</li>
-                <li>Moved grapple origin from the body center toward the character's grapple arm.</li>
-                <li>Added two red ribbon trails with chain-style physics behavior and slow-motion response.</li>
-                <li>Improved swing poses so the grapple arm tracks rope angle and the body responds to downswing and upswing positions.</li>
-              </ul>
-
-              <h4>Character Rig Editor</h4>
-              <ul>
-                <li>Added a standalone character rig editor page.</li>
-                <li>Added SVG part loading with hidden joint markers for alignment.</li>
-                <li>Added layer ordering, multi-select, group/ungroup, drag-select, rotate handles, resize handles, import/export, and undo.</li>
-                <li>Added animation pose saving and a focused looping preview panel.</li>
-                <li>Stored the current baseline pose as <strong>m_mid_swing</strong>.</li>
+                <li>Removed the old placeholder character renderer and moved gameplay onto the GLB skeletal player.</li>
+                <li>Added runtime checks for skeleton hierarchy, left/right side semantics, hinge axes, and rigid limb segment lengths.</li>
+                <li>Added authored pose references for idle, launch, swing, release, falling, and flourish states.</li>
+                <li>Adjusted the rope origin to use the left wrist anchor instead of the body center.</li>
+                <li>Improved leg, ankle, and flourish tuck behavior for more readable swing silhouettes.</li>
               </ul>
             </div>
           </section>
@@ -422,20 +397,14 @@
             <div class="category-icon" aria-hidden="true">V</div>
             <div class="category-body">
               <h3>Visual Direction</h3>
-              <h4>World and Background</h4>
+              <h4>World and Effects</h4>
               <ul>
-                <li>Shifted the scene toward a cyber-steampunk sunset palette with darker purples, oranges, and a larger pale moon.</li>
-                <li>Darkened the background so drone lights and gameplay objects remain readable.</li>
-                <li>Moved cloud mass higher/back into the scene so clouds no longer occupy the active play lane.</li>
-                <li>Added procedural sky, moon, cloud, star, and city texture work without adding heavy raster assets.</li>
-              </ul>
-
-              <h4>Drone Anchors and Feedback</h4>
-              <ul>
-                <li>Replaced plain anchor points with hovering drone anchors.</li>
-                <li>Moved drone lights above the drone head and added matching circular glow for idle, target, and grapple states.</li>
-                <li>Added drone rotor animation, hover motion, catch impact, and rope-tension response.</li>
-                <li>Added speed lines, motion trails, slow-motion timer icon, and larger yellow multiplier display.</li>
+                <li>Replaced the original start block with steam stacks, pipes, and procedural smoke.</li>
+                <li>Lowered the start-platform art so the player reads as standing on the ledge instead of clipping through it.</li>
+                <li>Added a darker bottom-screen gradient for a heavier, more ominous composition.</li>
+                <li>Added moon lighting and brighter rim treatment for clouds crossing the moon.</li>
+                <li>Removed pixel-render controls for now so the visual direction feels less gimmicky.</li>
+                <li>Removed the procedural background music while keeping SFX intact.</li>
               </ul>
             </div>
           </section>
@@ -444,26 +413,13 @@
             <div class="category-icon" aria-hidden="true">F</div>
             <div class="category-body">
               <h3>Fixes and Technical Updates</h3>
-              <h4>Performance and Consistency</h4>
+              <h4>Major Fixes</h4>
               <ul>
-                <li>Added fixed-step gameplay physics so swing damping and momentum are less dependent on display refresh rate.</li>
-                <li>Kept the heavier SVG character disabled in gameplay while the rig is still being refined, preserving smoother swing feel.</li>
-                <li>Removed temporary loader experiments that caused the dark-blue HUD-only screen.</li>
-                <li>Kept the game deployable as a lightweight static prototype.</li>
-              </ul>
-
-              <h4>Mobile and Browser Fixes</h4>
-              <ul>
-                <li>Fixed mobile selection behavior that showed blue handles and copy/paste controls over the game.</li>
-                <li>Improved touch handling for dragging, tapping, flourish, restart, pause, and build controls.</li>
-                <li>Adjusted HUD and controls for mobile portrait and landscape layouts.</li>
-                <li>Added script cache-busting updates so browsers fetch the newest prototype build.</li>
-              </ul>
-
-              <h4>Deployment</h4>
-              <ul>
-                <li>Added deployment and watch-deploy scripts for the live Hooked directory on prntscrn.dev.</li>
-                <li>Deployed the prototype and patch notes to the same live Hooked folder for mobile testing.</li>
+                <li>Fixed stale cache-busting references so the live page loads the current <strong>v0.5.74</strong> game code.</li>
+                <li>Added performance and character-runtime diagnostics for tracking frame cost, draw calls, and rig health.</li>
+                <li>Changed the end screen to show fastest speed and completed flips for the run.</li>
+                <li>Added malfunction logic for drone and flying-car anchors, including falling behavior and thruster/rotor sparks.</li>
+                <li>Kept the prototype deployable as a lightweight static web build.</li>
               </ul>
             </div>
           </section>
