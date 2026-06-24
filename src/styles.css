@@ -98,6 +98,7 @@ body {
 #hud,
 #status-center,
 #controls,
+#game-zoom-panel,
 #mute-button,
 #flourish-button,
 #editor,
@@ -233,6 +234,34 @@ strong {
   background: rgba(5, 12, 12, 0.68);
   color: #cdded7;
   font-size: 12px;
+}
+
+#game-zoom-panel {
+  position: absolute;
+  top: 50%;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 7px;
+  border: 1px solid rgba(188, 231, 216, 0.18);
+  border-radius: 8px;
+  background: rgba(5, 12, 12, 0.62);
+  color: #cdded7;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  transform: translateY(-50%);
+  pointer-events: auto;
+}
+
+#game-zoom {
+  width: 26px;
+  height: 154px;
+  accent-color: #9fe7ff;
+  cursor: ns-resize;
+  writing-mode: vertical-lr;
 }
 
 #editor {
@@ -730,6 +759,8 @@ kbd,
 #hud *,
 #controls,
 #controls *,
+#game-zoom-panel,
+#game-zoom-panel *,
 #editor,
 #editor *,
 #restart,
@@ -770,6 +801,14 @@ kbd,
 
   #controls {
     display: none;
+  }
+
+  #game-zoom-panel {
+    top: auto;
+    bottom: 12px;
+    left: 12px;
+    transform: scale(0.82);
+    transform-origin: bottom left;
   }
 
   #editor {
@@ -832,6 +871,14 @@ kbd,
 
   #controls {
     display: none;
+  }
+
+  #game-zoom-panel {
+    top: auto;
+    bottom: 8px;
+    left: 8px;
+    transform: scale(0.72);
+    transform-origin: bottom left;
   }
 
   #editor {

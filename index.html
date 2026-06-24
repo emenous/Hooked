@@ -57,6 +57,10 @@
         <kbd>Wheel</kbd><span>Zoom view</span>
         <kbd>B</kbd><span>Build / animate</span>
       </section>
+      <section id="game-zoom-panel" aria-label="Gameplay zoom">
+        <span>Zoom</span>
+        <input id="game-zoom" type="range" min="10" max="58" step="0.1" value="18" aria-label="Gameplay camera zoom" />
+      </section>
       <button id="mute-button" type="button" aria-label="Mute audio" aria-pressed="false">
         <span data-lucide="volume-2" aria-hidden="true"></span>
       </button>
@@ -96,6 +100,11 @@
             <legend>Character</legend>
             <button id="animate-character" type="button">Animate</button>
             <button id="save-pose" type="button">Save pose</button>
+            <button id="save-pose-frame" type="button">Save frame</button>
+            <button id="clear-pose-frames" type="button">Clear frames</button>
+            <button id="undo-pose-edit" type="button">Undo</button>
+            <button id="rotate-pose-negative" type="button">Rotate -</button>
+            <button id="rotate-pose-positive" type="button">Rotate +</button>
             <button id="reset-pose" type="button">Reset pose</button>
             <button id="export-poses" type="button">Download poses</button>
           </fieldset>
@@ -137,8 +146,8 @@
             <dd id="complete-deaths">0</dd>
           </div>
           <div>
-            <dt>Highest Multiplier Achieved</dt>
-            <dd id="complete-multiplier">1x</dd>
+            <dt>Fastest Speed</dt>
+            <dd id="complete-multiplier">0</dd>
           </div>
           <div>
             <dt>Completed Flips</dt>

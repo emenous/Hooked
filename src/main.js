@@ -1,7 +1,7 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
 
-const GAME_VERSION = "v0.5.67";
+const GAME_VERSION = "v0.5.73";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -33,9 +33,15 @@ const zoomInButton = document.querySelector("#zoom-in");
 const zoomFitButton = document.querySelector("#zoom-fit");
 const animateCharacterButton = document.querySelector("#animate-character");
 const savePoseButton = document.querySelector("#save-pose");
+const savePoseFrameButton = document.querySelector("#save-pose-frame");
+const clearPoseFramesButton = document.querySelector("#clear-pose-frames");
+const undoPoseEditButton = document.querySelector("#undo-pose-edit");
+const rotatePoseNegativeButton = document.querySelector("#rotate-pose-negative");
+const rotatePosePositiveButton = document.querySelector("#rotate-pose-positive");
 const resetPoseButton = document.querySelector("#reset-pose");
 const exportPoseButton = document.querySelector("#export-poses");
 const buildZoomInput = document.querySelector("#build-zoom");
+const gameZoomInput = document.querySelector("#game-zoom");
 const fxQualitySelect = document.querySelector("#fx-quality");
 const sfxMuteButton = document.querySelector("#sfx-mute");
 const sfxVolumeInput = document.querySelector("#sfx-volume");
@@ -118,6 +124,9 @@ const config = {
   buildZoomSpeed: 0.028,
   buildMinZoom: 6,
   buildMaxZoom: 1200,
+  animatorOrbitYawLimit: 0.55,
+  animatorOrbitPitchLimit: 0.28,
+  animatorOrbitDragSpeed: 0.006,
   buildMinY: -40,
   buildMaxY: 50,
   buildZoomStep: 8,
@@ -213,15 +222,22 @@ const ribbonLengthScale = 0.95;
 const ribbonAnchorBackOffset = 0;
 const ribbonAnchorLiftOffset = 0.02;
 const swingPoseTuning = {
-  leftArmRopeAimOffset: 0.29,
+  leftArmRopeAimOffset: 0.3,
   backwardLeftArmRopeAimScale: 0.5,
+  loadedLeftArmReach: 0.985,
+  loadedLeftArmBendSign: -1,
+  loadedLeftArmBendMinRopeY: 0.64,
   freeArmTrail: 0.74,
   freeArmRopeCounter: 0.26,
   freeArmLiftCounter: 0.18,
   freeArmMemoryRate: 7.5,
-  swingFootClockwise: 0.52,
-  airborneFootClockwise: 0.32,
-  tuckFootClockwise: 0.14,
+  footWindMaxClockwise: THREE.MathUtils.degToRad(75),
+  footWindSpeedForMax: 18,
+  footWindVerticalInfluence: 0.35,
+  backswingLegTuck: 0.82,
+  bottomLegPreload: 0.9,
+  apexLegDangle: 0.78,
+  forwardLegTrail: 0.52,
 };
 const fxQualityStorageKey = "hooked.fx.quality.v1";
 const fxQualityProfiles = {
@@ -263,6 +279,7 @@ const fxQualitySettings = {
   level: config.fxQuality,
 };
 const characterPoseStorageKey = "hooked.character.pose.references.v1";
+const characterPoseClipStorageKey = "hooked.character.pose.clips.v1";
 const characterPoseProjectPath = "./data/character_pose_references.json";
 const characterPoseLibraryVersion = 1;
 
@@ -274,6 +291,8 @@ const editorUi = {
   level: currentLevelId,
   objectType: objectTypeSelect?.value ?? "anchor",
   zoom: config.cameraBaseZoom,
+  poseViewYaw: 0,
+  poseViewPitch: 0,
   fxQuality: fxQualitySettings.level,
   sfxMuted: false,
   sfxVolume: 0.7,
@@ -320,6 +339,7 @@ const state = {
   multiplierActions: new Set(),
   deaths: 0,
   highestMultiplier: 1,
+  fastestSpeed: 0,
   completedFlips: 0,
   nextScoreX: 16,
   gameOver: false,
@@ -347,9 +367,12 @@ const state = {
   draggedObject: null,
   draggedPoseHandle: null,
   selectedObject: null,
+  selectedPoseHandle: null,
   panningCamera: false,
+  orbitingAnimatorCamera: false,
   animatorMode: false,
   manualPoseAngles: {},
+  poseUndoStack: [],
   inspectFrozen: false,
   inspectFrozenAt: 0,
   cameraZoomOffset: 0,
@@ -358,6 +381,8 @@ const state = {
   pointerWorld: new THREE.Vector3(),
   panStartWorld: new THREE.Vector3(),
   panStartCamera: new THREE.Vector3(),
+  orbitStartPointer: new THREE.Vector2(),
+  orbitStartAngles: new THREE.Vector2(),
   paused: false,
 };
 
@@ -1271,6 +1296,12 @@ window.HookedDebug = {
     if (options.persist !== false) saveCharacterPoseReferences();
     return describeCharacterPoseReferences();
   },
+  clearPoseClip(key, options = {}) {
+    if (key) delete poseReferenceState.localClips[key];
+    rebuildCharacterPoseReferences();
+    if (options.persist !== false) saveCharacterPoseClips();
+    return describeCharacterPoseReferences();
+  },
   previewPose(overrides) {
     return previewCharacterPose(overrides);
   },
@@ -2010,6 +2041,8 @@ const glbCharacter = {
   group: null,
   leftWristAnchor: null,
   ribbonAnchor: null,
+  centerMassNode: null,
+  centerMassOffset: new THREE.Vector3(),
   skinnedMeshCount: 0,
   animationClipNames: [],
   pivots: {},
@@ -2088,8 +2121,11 @@ const poseReferenceState = {
   projectError: null,
   projectPoses: {},
   localPoses: loadCharacterPoseReferences(),
+  localClips: normalizeCharacterPoseClipLibrary(loadCharacterPoseClips()),
   poses: {},
+  clips: {},
   lastApplied: null,
+  lastAppliedClip: null,
 };
 rebuildCharacterPoseReferences();
 loadProjectCharacterPoseReferences();
@@ -2145,6 +2181,12 @@ const poseHandleActiveMaterial = new THREE.MeshBasicMaterial({
   opacity: 1,
   depthTest: false,
 });
+const poseHandleSelectedMaterial = new THREE.MeshBasicMaterial({
+  color: 0xffffff,
+  transparent: true,
+  opacity: 1,
+  depthTest: false,
+});
 
 function syncCharacterSourceVisibility() {
   const showGlbCharacter = config.useGlbCharacter && glbCharacter.loaded;
@@ -2166,6 +2208,20 @@ function syncGlbCharacterTransform(facing = state.facing, flourishFlip = 0) {
   playerAssetRoot.rotation.z = flourishFlip;
   playerRibbonLayer.scale.set(facing * characterVisualScale, characterVisualScale, 1);
   playerRibbonLayer.rotation.z = flourishFlip;
+}
+
+function alignGlbPelvisToCenterMass() {
+  const centerMassNode = glbCharacter.pivots.pelvis ?? glbCharacter.pivots.root ?? null;
+  glbCharacter.centerMassNode = centerMassNode;
+  glbCharacter.centerMassOffset.set(0, 0, 0);
+  if (!glbCharacter.group || !centerMassNode) return;
+
+  glbCharacter.group.position.set(0, 0, 0);
+  glbCharacter.group.updateWorldMatrix(true, true);
+  playerAssetRoot.updateWorldMatrix(true, true);
+  centerMassNode.getWorldPosition(glbCharacter.centerMassOffset);
+  playerAssetRoot.worldToLocal(glbCharacter.centerMassOffset);
+  glbCharacter.group.position.sub(glbCharacter.centerMassOffset);
 }
 
 function getGlbPivotKey(pivot) {
@@ -2312,6 +2368,7 @@ function describeCharacterPoseReferences() {
     projectKeys: Object.keys(poseReferenceState.projectPoses).sort(),
     localKeys: Object.keys(poseReferenceState.localPoses).sort(),
     mergedKeys: Object.keys(poseReferenceState.poses).sort(),
+    clipKeys: Object.keys(poseReferenceState.clips).sort(),
     library: createCharacterPoseReferenceLibrary(),
   };
 }
@@ -2378,6 +2435,14 @@ function describeCharacterPoseSnapshot() {
     segments: {},
     jointAngles: {},
     authoredPose: poseReferenceState.lastApplied,
+    poseClip: poseReferenceState.lastAppliedClip,
+    selectedPoseHandle: state.selectedPoseHandle
+      ? {
+        key: state.selectedPoseHandle.key,
+        driverKey: state.selectedPoseHandle.driverKey,
+        driverLimit: getPivotLimit(state.selectedPoseHandle.driverKey).map((value) => roundRigNumber(value)),
+      }
+      : null,
   };
 
   for (const [key, pivot] of Object.entries(glbCharacter.pivots)) {
@@ -2394,6 +2459,8 @@ function describeCharacterPoseSnapshot() {
     scaleX: roundRigNumber(playerAssetRoot.scale.x),
     scaleZ: roundRigNumber(playerAssetRoot.scale.z),
     facing: state.facing,
+    centerMassNode: glbCharacter.centerMassNode?.name ?? null,
+    centerMassOffset: roundRigVector(glbCharacter.centerMassOffset),
   };
 
   const leftDepthKeys = ["leftShoulder", "leftWrist", "leftHip", "leftAnkle"];
@@ -2759,7 +2826,12 @@ const glbJointLimits = {
   wrist: [-0.42, 0.42],
   hip: [-1.1, 1.32],
   knee: [-0.02, 1.35],
-  ankle: [-0.48, 0.48],
+  ankle: [-swingPoseTuning.footWindMaxClockwise, 0.04],
+};
+
+const glbJointLimitOverrides = {
+  leftAnkle: glbJointLimits.ankle,
+  rightAnkle: glbJointLimits.ankle,
 };
 
 function normalizeAngle(angle) {
@@ -2787,6 +2859,17 @@ function loadCharacterPoseReferences() {
     return stored;
   } catch {
     localStorage.removeItem(characterPoseStorageKey);
+    return {};
+  }
+}
+
+function loadCharacterPoseClips() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(characterPoseClipStorageKey));
+    if (!stored || typeof stored !== "object") return {};
+    return stored;
+  } catch {
+    localStorage.removeItem(characterPoseClipStorageKey);
     return {};
   }
 }
@@ -2822,10 +2905,51 @@ function normalizeCharacterPoseLibrary(payload) {
   return poses;
 }
 
+function normalizeCharacterPoseClipLibrary(payload) {
+  const rawClips = payload?.clips && typeof payload.clips === "object"
+    ? payload.clips
+    : payload && typeof payload === "object"
+      ? payload
+      : {};
+  const clips = {};
+  for (const [key, clip] of Object.entries(rawClips)) {
+    const frames = Array.isArray(clip?.frames)
+      ? clip.frames
+      : Array.isArray(clip)
+        ? clip
+        : [];
+    const normalizedFrames = frames
+      .map((frame) => ({
+        at: Number.isFinite(frame?.at)
+          ? THREE.MathUtils.clamp(frame.at, 0, 1)
+          : 0,
+        savedAt: typeof frame?.savedAt === "string" ? frame.savedAt : null,
+        source: typeof frame?.source === "string" ? frame.source : "local_animator_frame",
+        notes: typeof frame?.notes === "string" ? frame.notes : "",
+        angles: normalizeCharacterPoseAngles(frame?.angles),
+      }))
+      .filter((frame) => Object.keys(frame.angles).length)
+      .sort((a, b) => a.at - b.at);
+    if (!normalizedFrames.length) continue;
+    clips[key] = {
+      key,
+      source: typeof clip?.source === "string" ? clip.source : "local_animator_clip",
+      blend: Number.isFinite(clip?.blend)
+        ? THREE.MathUtils.clamp(clip.blend, 0, 1)
+        : 0.48,
+      frames: normalizedFrames,
+    };
+  }
+  return clips;
+}
+
 function rebuildCharacterPoseReferences() {
   poseReferenceState.poses = {
     ...poseReferenceState.projectPoses,
     ...poseReferenceState.localPoses,
+  };
+  poseReferenceState.clips = {
+    ...poseReferenceState.localClips,
   };
 }
 
@@ -2853,11 +2977,40 @@ function saveCharacterPoseReferences() {
   localStorage.setItem(characterPoseStorageKey, JSON.stringify(poseReferenceState.localPoses));
 }
 
+function saveCharacterPoseClips() {
+  localStorage.setItem(characterPoseClipStorageKey, JSON.stringify(poseReferenceState.localClips));
+}
+
 function getCurrentPoseReferenceKey() {
   return state.playerAnimation || resolvePlayerAnimationState();
 }
 
+function getCurrentPoseClipPhase() {
+  if (state.flourishSpinRemaining > 0) {
+    return THREE.MathUtils.clamp(1 - state.flourishSpinRemaining / config.flourishSpinDuration, 0, 1);
+  }
+
+  const ropeTarget = state.grappled && state.anchor
+    ? getVisualGrapplePoint(state.anchor, characterScratchA)
+    : state.hookActive
+      ? state.hookEnd
+      : null;
+  if (ropeTarget) {
+    const angle = Math.atan2(ropeTarget.y - state.player.y, ropeTarget.x - state.player.x);
+    return THREE.MathUtils.clamp((normalizeAngle(angle) + Math.PI) / (Math.PI * 2), 0, 1);
+  }
+
+  const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  if (speed > 0.001) {
+    const angle = Math.atan2(state.velocity.y, state.velocity.x * (state.facing || 1));
+    return THREE.MathUtils.clamp((normalizeAngle(angle) + Math.PI) / (Math.PI * 2), 0, 1);
+  }
+
+  return 0;
+}
+
 function getPivotLimit(key) {
+  if (glbJointLimitOverrides[key]) return glbJointLimitOverrides[key];
   if (key === "root" || key === "pelvis" || key === "waist" || key === "chest") return glbJointLimits.torso;
   if (key === "neck" || key === "head") return glbJointLimits.neck;
   if (key.includes("Shoulder")) return glbJointLimits.shoulder;
@@ -2884,13 +3037,102 @@ function updateFreeArmSwingMemory(target, dt) {
   return state.freeArmSwingMemory;
 }
 
-function getFootClockwiseTuning({ hooked, airborne, tuck }) {
-  const base = hooked
-    ? swingPoseTuning.swingFootClockwise
-    : airborne
-      ? swingPoseTuning.airborneFootClockwise
-      : 0;
-  return THREE.MathUtils.lerp(base, swingPoseTuning.tuckFootClockwise, THREE.MathUtils.smootherstep(tuck, 0, 1));
+function getWindDrivenFootClockwise(tuck = 0) {
+  const localVelocityX = state.velocity.x * (state.facing || 1);
+  const apparentWindX = -localVelocityX;
+  const apparentWindY = -state.velocity.y * swingPoseTuning.footWindVerticalInfluence;
+  const apparentWindSpeed = Math.hypot(apparentWindX, apparentWindY);
+  const speedPressure = THREE.MathUtils.clamp(
+    apparentWindSpeed / swingPoseTuning.footWindSpeedForMax,
+    0,
+    1,
+  );
+  const directionPressure = THREE.MathUtils.clamp(
+    (Math.abs(apparentWindX) + Math.max(0, apparentWindY) * 0.45) / swingPoseTuning.footWindSpeedForMax,
+    0,
+    1,
+  );
+  const tuckRelease = 1 - THREE.MathUtils.smootherstep(tuck, 0.15, 0.9);
+  return swingPoseTuning.footWindMaxClockwise
+    * THREE.MathUtils.smootherstep(Math.max(speedPressure, directionPressure), 0, 1)
+    * tuckRelease;
+}
+
+function getSwingPhaseLegPose({
+  hooked,
+  airborne,
+  swingFlow,
+  ropeX,
+  ropeY,
+  fallAmount,
+  riseAmount,
+  speedAmount,
+  localVelocityX,
+  tuck,
+}) {
+  const localSpeedSign = Math.sign(localVelocityX || state.facing || 1);
+  const motion = Math.abs(swingFlow);
+  const bottomPhase = hooked
+    ? THREE.MathUtils.smoothstep(-ropeY, 0.16, 0.86)
+    : THREE.MathUtils.smoothstep(fallAmount, 0.1, 0.9);
+  const apexPhase = hooked
+    ? THREE.MathUtils.smoothstep(ropeY, 0.42, 0.94) * THREE.MathUtils.smoothstep(0.72 - motion, 0, 0.72)
+    : THREE.MathUtils.smoothstep(riseAmount, 0.08, 0.75) * THREE.MathUtils.smoothstep(0.72 - speedAmount, 0, 0.72);
+  const backswingPhase = hooked
+    ? THREE.MathUtils.smoothstep(-swingFlow, 0.05, 0.72) * THREE.MathUtils.smoothstep(riseAmount + Math.max(0, ropeY) * 0.35, 0.08, 0.84)
+    : 0;
+  const forwardTrailPhase = THREE.MathUtils.smoothstep(swingFlow, 0.08, 0.78) * (1 - apexPhase * 0.75);
+  const preload = bottomPhase * swingPoseTuning.bottomLegPreload;
+  const backswingTuck = backswingPhase * swingPoseTuning.backswingLegTuck;
+  const dangle = apexPhase * swingPoseTuning.apexLegDangle;
+  const forwardTrail = forwardTrailPhase * swingPoseTuning.forwardLegTrail;
+  const split = hooked
+    ? clampJoint(-swingFlow * 0.18 + ropeX * 0.07, -0.2, 0.2)
+    : clampJoint(localVelocityX * 0.014 + fallAmount * 0.05 * localSpeedSign, -0.22, 0.22);
+
+  let leftHip = -0.08 + forwardTrail * 0.44 - preload * 0.3 - backswingTuck * 0.34 + split;
+  let rightHip = -0.16 + forwardTrail * 0.34 - preload * 0.42 - backswingTuck * 0.48 - split * 0.75;
+  let leftKnee = 0.06 + preload * 0.72 + backswingTuck * 0.82 + forwardTrail * 0.18;
+  let rightKnee = 0.05 + preload * 0.86 + backswingTuck * 0.98 + forwardTrail * 0.12;
+
+  if (dangle > 0) {
+    leftHip = THREE.MathUtils.lerp(leftHip, 0.02 + split * 0.35, dangle);
+    rightHip = THREE.MathUtils.lerp(rightHip, -0.03 - split * 0.3, dangle);
+    leftKnee = THREE.MathUtils.lerp(leftKnee, 0.08, dangle);
+    rightKnee = THREE.MathUtils.lerp(rightKnee, 0.07, dangle);
+  }
+
+  if (!hooked && airborne) {
+    leftHip += fallAmount * 0.12 - riseAmount * 0.08;
+    rightHip += fallAmount * 0.06 - riseAmount * 0.12;
+    leftKnee += fallAmount * 0.16;
+    rightKnee += fallAmount * 0.12;
+  }
+
+  let leftAnkle = -0.02;
+  let rightAnkle = 0.02;
+  if (tuck > 0) {
+    const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
+    leftHip = THREE.MathUtils.lerp(leftHip, 1.3, compact);
+    rightHip = THREE.MathUtils.lerp(rightHip, 1.24, compact);
+    leftKnee = THREE.MathUtils.lerp(leftKnee, 1.34, compact);
+    rightKnee = THREE.MathUtils.lerp(rightKnee, 1.32, compact);
+    leftAnkle = THREE.MathUtils.lerp(leftAnkle, 0.04, compact);
+    rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.04, compact);
+  }
+
+  const windFootClockwise = getWindDrivenFootClockwise(tuck);
+  leftAnkle -= windFootClockwise;
+  rightAnkle -= windFootClockwise;
+
+  return {
+    leftHip: clampAngle(leftHip, glbJointLimits.hip),
+    rightHip: clampAngle(rightHip, glbJointLimits.hip),
+    leftKnee: clampAngle(leftKnee, glbJointLimits.knee),
+    rightKnee: clampAngle(rightKnee, glbJointLimits.knee),
+    leftAnkle: clampAngle(leftAnkle, glbJointLimits.ankle),
+    rightAnkle: clampAngle(rightAnkle, glbJointLimits.ankle),
+  };
 }
 
 function getFreeArmSwingTarget({
@@ -2930,12 +3172,31 @@ function captureCurrentGlbPoseAngles() {
   return angles;
 }
 
+function captureLiveGlbPoseForEditing() {
+  if (!glbCharacter.loaded) return {};
+  playerMesh.updateWorldMatrix(true, true);
+  playerAssetRoot.updateWorldMatrix(true, true);
+  return captureCurrentGlbPoseAngles();
+}
+
 function applyGlbPoseAngles(angles = {}, immediate = false) {
   for (const [key, angle] of Object.entries(angles)) {
     const pivot = glbCharacter.pivots[key];
     if (!pivot || !Number.isFinite(angle)) continue;
     setGlbPivotAngle(pivot, clampPoseAngle(key, angle), immediate);
   }
+}
+
+function lerpPoseAngles(a = {}, b = {}, t = 0) {
+  const angles = {};
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    const av = Number.isFinite(a[key]) ? a[key] : b[key];
+    const bv = Number.isFinite(b[key]) ? b[key] : a[key];
+    if (!Number.isFinite(av) || !Number.isFinite(bv)) continue;
+    angles[key] = clampPoseAngle(key, av + normalizeAngle(bv - av) * t);
+  }
+  return angles;
 }
 
 function getAuthoredPoseForCurrentState() {
@@ -2994,6 +3255,83 @@ function applyAuthoredPoseReference({
   return poseReferenceState.lastApplied;
 }
 
+function applyPoseClipFrame({
+  immediate = false,
+  preserveRopeArm = state.hookActive || state.grappled,
+} = {}) {
+  if (state.animatorMode) return null;
+  const key = getCurrentPoseReferenceKey();
+  const clip = poseReferenceState.clips[key];
+  if (!clip?.frames?.length) {
+    poseReferenceState.lastAppliedClip = null;
+    return null;
+  }
+
+  const phase = getCurrentPoseClipPhase();
+  const frames = clip.frames;
+  let angles = frames[0].angles;
+  let from = frames[0];
+  let to = frames[0];
+  let frameT = 0;
+  if (frames.length > 1) {
+    if (phase <= frames[0].at) {
+      from = frames[0];
+      to = frames[0];
+      angles = frames[0].angles;
+    } else if (phase >= frames[frames.length - 1].at) {
+      from = frames[frames.length - 1];
+      to = frames[frames.length - 1];
+      angles = from.angles;
+    } else {
+      for (let index = 0; index < frames.length - 1; index += 1) {
+        const a = frames[index];
+        const b = frames[index + 1];
+        if (phase >= a.at && phase <= b.at) {
+          from = a;
+          to = b;
+          frameT = (phase - a.at) / Math.max(b.at - a.at, 0.0001);
+          angles = lerpPoseAngles(a.angles, b.angles, THREE.MathUtils.smootherstep(frameT, 0, 1));
+          break;
+        }
+      }
+    }
+  }
+
+  const amount = THREE.MathUtils.clamp(clip.blend ?? 0.48, 0, 1);
+  const applied = [];
+  const skipped = [];
+  for (const [angleKey, angle] of Object.entries(angles)) {
+    const pivot = glbCharacter.pivots[angleKey];
+    if (!pivot || !Number.isFinite(angle)) {
+      skipped.push({ key: angleKey, reason: "missing-pivot-or-angle" });
+      continue;
+    }
+    if (preserveRopeArm && authoredPoseRopeProtectedKeys.has(angleKey)) {
+      skipped.push({ key: angleKey, reason: "rope-arm-protected" });
+      continue;
+    }
+    const current = glbCharacter.currentAngles.get(pivot) ?? 0;
+    const target = clampPoseAngle(angleKey, angle);
+    const blended = amount >= 0.999
+      ? target
+      : clampPoseAngle(angleKey, current + normalizeAngle(target - current) * amount);
+    setGlbPivotAngle(pivot, blended, immediate);
+    applied.push({ key: angleKey, angle: roundRigNumber(blended) });
+  }
+
+  poseReferenceState.lastAppliedClip = {
+    key,
+    phase: roundRigNumber(phase),
+    blend: roundRigNumber(amount),
+    from: roundRigNumber(from.at),
+    to: roundRigNumber(to.at),
+    t: roundRigNumber(frameT),
+    applied,
+    skipped,
+  };
+  return poseReferenceState.lastAppliedClip;
+}
+
 function createPoseHandles() {
   poseHandleLayer.clear();
   poseHandles.length = 0;
@@ -3024,7 +3362,9 @@ function updatePoseHandles() {
     handle.mesh.position.z = 0.82;
     handle.mesh.material = state.draggedPoseHandle === handle
       ? poseHandleActiveMaterial
-      : poseHandleMaterial;
+      : state.selectedPoseHandle === handle
+        ? poseHandleSelectedMaterial
+        : poseHandleMaterial;
     handle.mesh.visible = true;
   }
 }
@@ -3032,28 +3372,68 @@ function updatePoseHandles() {
 function syncAnimatorControls() {
   setIconButtonLabel(animateCharacterButton, state.animatorMode ? "Animating" : "Animate", "bone");
   setIconButtonLabel(savePoseButton, "Save pose", "save");
+  setIconButtonLabel(savePoseFrameButton, "Save frame", "circle-dot");
+  setIconButtonLabel(clearPoseFramesButton, "Clear frames", "trash-2");
+  setIconButtonLabel(undoPoseEditButton, "Undo", "undo-2");
+  setIconButtonLabel(rotatePoseNegativeButton, "Rotate -", "rotate-ccw");
+  setIconButtonLabel(rotatePosePositiveButton, "Rotate +", "rotate-cw");
   setIconButtonLabel(resetPoseButton, "Reset pose", "rotate-ccw");
   setIconButtonLabel(exportPoseButton, "Download poses", "download");
   animateCharacterButton?.setAttribute("aria-pressed", String(state.animatorMode));
   animateCharacterButton?.classList.toggle("active", state.animatorMode);
+  if (undoPoseEditButton) undoPoseEditButton.disabled = state.poseUndoStack.length === 0;
 }
 
 function setAnimatorMode(enabled) {
   state.animatorMode = Boolean(enabled);
   if (state.animatorMode) {
     if (!state.paused) setPaused(true);
-    releaseGrapple();
-    const savedPose = getAuthoredPoseForCurrentState();
-    state.manualPoseAngles = savedPose?.angles
-      ? { ...savedPose.angles }
-      : captureCurrentGlbPoseAngles();
+    state.manualPoseAngles = captureLiveGlbPoseForEditing();
+    state.poseUndoStack.length = 0;
     applyGlbPoseAngles(state.manualPoseAngles, true);
+    applyAnimatorOrbitCamera(getAnimatorCameraDistance());
   } else {
     state.draggedPoseHandle = null;
+    state.selectedPoseHandle = null;
     state.manualPoseAngles = {};
+    state.poseUndoStack.length = 0;
+    state.orbitingAnimatorCamera = false;
+    editorUi.poseViewYaw = 0;
+    editorUi.poseViewPitch = 0;
+    camera.lookAt(camera.position.x, camera.position.y, 0);
   }
   syncAnimatorControls();
   updatePoseHandles();
+}
+
+function pushPoseUndoState() {
+  if (!state.animatorMode || !state.paused) return;
+  state.poseUndoStack.push({ ...state.manualPoseAngles });
+  if (state.poseUndoStack.length > 60) state.poseUndoStack.shift();
+  syncAnimatorControls();
+}
+
+function undoPoseEdit() {
+  if (!state.animatorMode || !state.paused || !glbCharacter.loaded) return;
+  const previousPose = state.poseUndoStack.pop();
+  if (!previousPose) return;
+  state.manualPoseAngles = { ...previousPose };
+  applyGlbPoseAngles(state.manualPoseAngles, true);
+  updatePoseHandles();
+  syncAnimatorControls();
+}
+
+function getCurrentPoseClip() {
+  const key = getCurrentPoseReferenceKey();
+  if (!poseReferenceState.localClips[key]) {
+    poseReferenceState.localClips[key] = {
+      key,
+      source: "local_animator_clip",
+      blend: 0.52,
+      frames: [],
+    };
+  }
+  return poseReferenceState.localClips[key];
 }
 
 function saveCurrentCharacterPose() {
@@ -3075,9 +3455,48 @@ function saveCurrentCharacterPose() {
   syncAnimatorControls();
 }
 
+function saveCurrentCharacterPoseFrame() {
+  if (!glbCharacter.loaded) return;
+  const key = getCurrentPoseReferenceKey();
+  const phase = Number(getCurrentPoseClipPhase().toFixed(4));
+  const angles = state.animatorMode
+    ? { ...state.manualPoseAngles, ...captureCurrentGlbPoseAngles() }
+    : captureCurrentGlbPoseAngles();
+  const clip = getCurrentPoseClip();
+  const frame = {
+    at: phase,
+    savedAt: new Date().toISOString(),
+    source: "local_animator_frame",
+    notes: `${key} frame at ${phase}`,
+    angles: normalizeCharacterPoseAngles(angles),
+  };
+  const existing = clip.frames.findIndex((candidate) => Math.abs(candidate.at - phase) <= 0.015);
+  if (existing >= 0) {
+    clip.frames[existing] = frame;
+  } else {
+    clip.frames.push(frame);
+  }
+  clip.frames.sort((a, b) => a.at - b.at);
+  poseReferenceState.localClips = normalizeCharacterPoseClipLibrary(poseReferenceState.localClips);
+  rebuildCharacterPoseReferences();
+  saveCharacterPoseClips();
+  syncAnimatorControls();
+}
+
+function clearCurrentCharacterPoseFrames() {
+  const key = getCurrentPoseReferenceKey();
+  delete poseReferenceState.localClips[key];
+  rebuildCharacterPoseReferences();
+  saveCharacterPoseClips();
+  poseReferenceState.lastAppliedClip = null;
+  syncAnimatorControls();
+}
+
 function resetCurrentCharacterPoseReference() {
   const key = getCurrentPoseReferenceKey();
+  pushPoseUndoState();
   delete poseReferenceState.localPoses[key];
+  delete poseReferenceState.localClips[key];
   rebuildCharacterPoseReferences();
   const fallbackPose = poseReferenceState.poses[key];
   state.manualPoseAngles = fallbackPose?.angles ? { ...fallbackPose.angles } : {};
@@ -3087,6 +3506,7 @@ function resetCurrentCharacterPoseReference() {
     resetGlbPivotAngles();
   }
   saveCharacterPoseReferences();
+  saveCharacterPoseClips();
   syncAnimatorControls();
   updatePoseHandles();
 }
@@ -3110,8 +3530,9 @@ function createCharacterPoseReferenceLibrary() {
     updatedAt: new Date().toISOString(),
     model: config.glbCharacterPath,
     poseMode: config.glbPoseMode,
-    note: "Committed Sling pose references. Browser-local poses override project poses while authoring.",
+    note: "Committed Sling pose references. Browser-local poses and pose clips override project poses while authoring.",
     poses,
+    clips: normalizeCharacterPoseClipLibrary(poseReferenceState.clips),
   };
 }
 
@@ -3140,7 +3561,9 @@ function startPoseHandleDrag(event) {
   if (!handle) return false;
   event.preventDefault();
   canvas.setPointerCapture(event.pointerId);
+  pushPoseUndoState();
   state.draggedPoseHandle = handle;
+  state.selectedPoseHandle = handle;
   updatePoseHandles();
   return true;
 }
@@ -3173,6 +3596,25 @@ function dragPoseHandle(event) {
   applyGlbPoseAngles(state.manualPoseAngles, true);
   updatePoseHandles();
   return true;
+}
+
+function rotateSelectedPoseJoint(direction) {
+  if (!state.animatorMode || !state.paused || !glbCharacter.loaded) return;
+  const handle = state.selectedPoseHandle;
+  if (!handle) return;
+  const driverPivot = glbCharacter.pivots[handle.driverKey];
+  if (!driverPivot) return;
+  pushPoseUndoState();
+  const currentDriverAngle = state.manualPoseAngles[handle.driverKey]
+    ?? glbCharacter.currentAngles.get(driverPivot)
+    ?? 0;
+  const step = THREE.MathUtils.degToRad(5) * Math.sign(direction || 1);
+  state.manualPoseAngles[handle.driverKey] = clampPoseAngle(
+    handle.driverKey,
+    currentDriverAngle + step,
+  );
+  applyGlbPoseAngles(state.manualPoseAngles, true);
+  updatePoseHandles();
 }
 
 function stopPoseHandleDrag(event) {
@@ -3253,6 +3695,44 @@ function setGlbAlignedTwoBonePose({
   return { upperWorld, lowerWorld };
 }
 
+function setLoadedLeftArmPose({
+  pivots,
+  ropeAngle,
+  ropeY,
+  leftArmLength,
+  chestWorld,
+}) {
+  const aimAngle = ropeAngle + getLoadedLeftArmAimOffset();
+  if (ropeY >= swingPoseTuning.loadedLeftArmBendMinRopeY) {
+    return setGlbTwoBonePose({
+      rootPivot: pivots.leftShoulder,
+      midPivot: pivots.leftElbow,
+      endPivot: pivots.leftWrist,
+      upperName: "leftShoulder",
+      lowerName: "leftElbow",
+      targetX: Math.cos(aimAngle) * leftArmLength * swingPoseTuning.loadedLeftArmReach,
+      targetY: Math.sin(aimAngle) * leftArmLength * swingPoseTuning.loadedLeftArmReach,
+      parentWorldAngle: chestWorld,
+      bendSign: swingPoseTuning.loadedLeftArmBendSign,
+      upperLimit: glbJointLimits.loadShoulder,
+      lowerLimit: glbJointLimits.loadElbow,
+    });
+  }
+  return setGlbAlignedTwoBonePose({
+    rootPivot: pivots.leftShoulder,
+    midPivot: pivots.leftElbow,
+    endPivot: pivots.leftWrist,
+    upperName: "leftShoulder",
+    lowerName: "leftElbow",
+    targetAngle: aimAngle,
+    parentWorldAngle: chestWorld,
+    jointBend: 0,
+    upperLimit: glbJointLimits.loadShoulder,
+    lowerLimit: glbJointLimits.loadElbow,
+    immediate: true,
+  });
+}
+
 function setGlbLegSwingPose(pivots, {
   hooked,
   airborne,
@@ -3261,58 +3741,36 @@ function setGlbLegSwingPose(pivots, {
   fallTuck,
   tuck,
   ropeX,
+  ropeY,
+  speedAmount,
+  localVelocityX,
 }) {
-  const swingAmount = Math.abs(swingFlow);
-  let trail = 0;
-  let leftHip = 0.02;
-  let rightHip = -0.015;
-  let leftKnee = -0.02;
-  let rightKnee = -0.02;
-  let leftAnkle = -0.02;
-  let rightAnkle = 0.02;
+  const fallAmount = THREE.MathUtils.clamp(Math.max(0, fallTuck), 0, 1);
+  const riseAmount = THREE.MathUtils.clamp(Math.max(0, swingArcLift), 0, 1);
+  const legPose = getSwingPhaseLegPose({
+    hooked,
+    airborne,
+    swingFlow,
+    ropeX,
+    ropeY,
+    fallAmount,
+    riseAmount,
+    speedAmount,
+    localVelocityX,
+    tuck,
+  });
 
-  if (hooked) {
-    trail = clampJoint(-swingFlow * 0.46 - ropeX * 0.1 + swingArcLift * 0.12, -0.52, 0.52);
-    const kneeFlex = clampJoint(0.12 + swingAmount * 0.34 + Math.max(0, fallTuck) * 0.14, 0.06, 0.62);
-    leftHip = trail + 0.1;
-    rightHip = trail - 0.09;
-    leftKnee = kneeFlex;
-    rightKnee = kneeFlex * 0.82;
-    leftAnkle = clampJoint(-trail * 0.18 + kneeFlex * 0.12, -0.26, 0.26);
-    rightAnkle = clampJoint(-trail * 0.14 + kneeFlex * 0.1, -0.24, 0.24);
-  } else if (airborne) {
-    trail = clampJoint(-swingFlow * 0.38 + swingArcLift * 0.2, -0.55, 0.55);
-    const kneeFlex = clampJoint(0.1 + Math.max(0, fallTuck) * 0.28, 0.04, 0.48);
-    leftHip = trail + 0.1;
-    rightHip = trail - 0.08;
-    leftKnee = kneeFlex;
-    rightKnee = kneeFlex * 0.75;
-    leftAnkle = clampJoint(-trail * 0.2 + kneeFlex * 0.12, -0.26, 0.26);
-    rightAnkle = clampJoint(-trail * 0.16 + kneeFlex * 0.1, -0.24, 0.24);
-  }
+  setGlbPivotAngle(pivots.leftHip, legPose.leftHip);
+  setGlbPivotAngle(pivots.rightHip, legPose.rightHip);
+  setGlbPivotAngle(pivots.leftKnee, legPose.leftKnee);
+  setGlbPivotAngle(pivots.rightKnee, legPose.rightKnee);
+  setGlbPivotAngle(pivots.leftAnkle, legPose.leftAnkle);
+  setGlbPivotAngle(pivots.rightAnkle, legPose.rightAnkle);
 
-  if (tuck > 0) {
-    const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
-    leftHip = THREE.MathUtils.lerp(leftHip, 1.3, compact);
-    rightHip = THREE.MathUtils.lerp(rightHip, 1.24, compact);
-    leftKnee = THREE.MathUtils.lerp(leftKnee, 1.34, compact);
-    rightKnee = THREE.MathUtils.lerp(rightKnee, 1.32, compact);
-    leftAnkle = THREE.MathUtils.lerp(leftAnkle, 0.44, compact);
-    rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.42, compact);
-  }
-
-  const footClockwise = getFootClockwiseTuning({ hooked, airborne, tuck });
-  leftAnkle -= footClockwise;
-  rightAnkle -= footClockwise;
-
-  setGlbPivotAngle(pivots.leftHip, clampAngle(leftHip, glbJointLimits.hip));
-  setGlbPivotAngle(pivots.rightHip, clampAngle(rightHip, glbJointLimits.hip));
-  setGlbPivotAngle(pivots.leftKnee, clampAngle(leftKnee, glbJointLimits.knee));
-  setGlbPivotAngle(pivots.rightKnee, clampAngle(rightKnee, glbJointLimits.knee));
-  setGlbPivotAngle(pivots.leftAnkle, clampAngle(leftAnkle, glbJointLimits.ankle));
-  setGlbPivotAngle(pivots.rightAnkle, clampAngle(rightAnkle, glbJointLimits.ankle));
-
-  return { leftAnkleWorld: leftHip + leftKnee, rightAnkleWorld: rightHip + rightKnee };
+  return {
+    leftAnkleWorld: legPose.leftHip + legPose.leftKnee,
+    rightAnkleWorld: legPose.rightHip + legPose.rightKnee,
+  };
 }
 
 function setGlbIdlePose(pivots, idleBreath, pelvisWorld, waistWorld, chestWorld) {
@@ -3340,6 +3798,7 @@ function setGlbRelativePose(now) {
   const pivots = glbCharacter.pivots;
   const idleBreath = state.playerAnimation === "idleHang" ? Math.sin(now * 3.2) : 0;
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  const speedAmount = THREE.MathUtils.clamp(speed / 28, 0, 1);
   const localVelocityX = state.velocity.x * state.facing;
   const localVelocityY = state.velocity.y;
   const speedLean = clampJoint(localVelocityX * 0.012, -0.18, 0.22);
@@ -3457,18 +3916,12 @@ function setGlbRelativePose(now) {
 
   const ropeAngle = Math.atan2(ropeY, ropeX);
   const leftArm = hooked
-    ? setGlbAlignedTwoBonePose({
-      rootPivot: pivots.leftShoulder,
-      midPivot: pivots.leftElbow,
-      endPivot: pivots.leftWrist,
-      upperName: "leftShoulder",
-      lowerName: "leftElbow",
-      targetAngle: ropeAngle + getLoadedLeftArmAimOffset(),
-      parentWorldAngle: chestWorld,
-      jointBend: 0,
-      upperLimit: glbJointLimits.loadShoulder,
-      lowerLimit: glbJointLimits.loadElbow,
-      immediate: true,
+    ? setLoadedLeftArmPose({
+      pivots,
+      ropeAngle,
+      ropeY,
+      leftArmLength,
+      chestWorld,
     })
     : setGlbTwoBonePose({
       rootPivot: pivots.leftShoulder,
@@ -3504,6 +3957,9 @@ function setGlbRelativePose(now) {
     fallTuck,
     tuck,
     ropeX,
+    ropeY,
+    speedAmount,
+    localVelocityX,
   });
 
   setGlbPivotAngle(pivots.leftWrist, hooked
@@ -3601,18 +4057,12 @@ function setGlbRagdollLitePose(now, dt = config.physicsStep) {
   let leftArm = { upperWorld: -Math.PI / 2, lowerWorld: -Math.PI / 2 };
   if (hooked) {
     const ropeAngle = Math.atan2(ropeY, ropeX);
-    leftArm = setGlbAlignedTwoBonePose({
-      rootPivot: pivots.leftShoulder,
-      midPivot: pivots.leftElbow,
-      endPivot: pivots.leftWrist,
-      upperName: "leftShoulder",
-      lowerName: "leftElbow",
-      targetAngle: ropeAngle + getLoadedLeftArmAimOffset(),
-      parentWorldAngle: chestWorld,
-      jointBend: 0,
-      upperLimit: glbJointLimits.loadShoulder,
-      lowerLimit: glbJointLimits.loadElbow,
-      immediate: true,
+    leftArm = setLoadedLeftArmPose({
+      pivots,
+      ropeAngle,
+      ropeY,
+      leftArmLength,
+      chestWorld,
     });
     setGlbPivotAngle(pivots.leftWrist, clampAngle(ropeAngle - leftArm.lowerWorld, glbJointLimits.wrist), true);
   } else {
@@ -3655,42 +4105,25 @@ function setGlbRagdollLitePose(now, dt = config.physicsStep) {
   });
   setGlbPivotAngle(pivots.rightWrist, clampAngle(-rightArm.lowerWorld * 0.08, glbJointLimits.wrist));
 
-  let legTrail = clampJoint(-swingFlow * 0.82 + (fallAmount - riseAmount) * 0.16, -1.05, 1.05);
-  let kneeFlex = clampJoint(0.1 + speedAmount * 0.2 + fallAmount * 0.22 + Math.abs(swingFlow) * 0.18, 0.05, 0.94);
-  const legSplit = hooked
-    ? clampJoint(-swingFlow * 0.34 + ropeX * 0.08, -0.34, 0.34)
-    : clampJoint(
-      localVelocityX * 0.022 + fallAmount * 0.08 * Math.sign(localVelocityX || state.facing || 1),
-      -0.36,
-      0.36,
-    );
-  let leftHip = legTrail + 0.12 + legSplit * 0.5;
-  let rightHip = legTrail - 0.14 - legSplit * 0.5;
-  let leftKnee = clampJoint(kneeFlex * (1 + legSplit * 0.28), 0.04, 1.02);
-  let rightKnee = clampJoint(kneeFlex * (0.84 - legSplit * 0.22), 0.04, 0.96);
-  let leftAnkle = clampJoint(-legTrail * 0.22 + kneeFlex * 0.08 - legSplit * 0.08, -0.36, 0.36);
-  let rightAnkle = clampJoint(-legTrail * 0.18 + kneeFlex * 0.08 + legSplit * 0.08, -0.36, 0.36);
+  const legPose = getSwingPhaseLegPose({
+    hooked,
+    airborne,
+    swingFlow,
+    ropeX,
+    ropeY,
+    fallAmount,
+    riseAmount,
+    speedAmount,
+    localVelocityX,
+    tuck,
+  });
 
-  if (tuck > 0) {
-    const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
-    leftHip = THREE.MathUtils.lerp(leftHip, 1.3, compact);
-    rightHip = THREE.MathUtils.lerp(rightHip, 1.24, compact);
-    leftKnee = THREE.MathUtils.lerp(leftKnee, 1.34, compact);
-    rightKnee = THREE.MathUtils.lerp(rightKnee, 1.32, compact);
-    leftAnkle = THREE.MathUtils.lerp(leftAnkle, 0.44, compact);
-    rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.42, compact);
-  }
-
-  const footClockwise = getFootClockwiseTuning({ hooked, airborne, tuck });
-  leftAnkle -= footClockwise;
-  rightAnkle -= footClockwise;
-
-  setGlbPivotAngle(pivots.leftHip, clampAngle(leftHip, glbJointLimits.hip));
-  setGlbPivotAngle(pivots.rightHip, clampAngle(rightHip, glbJointLimits.hip));
-  setGlbPivotAngle(pivots.leftKnee, clampAngle(leftKnee, glbJointLimits.knee));
-  setGlbPivotAngle(pivots.rightKnee, clampAngle(rightKnee, glbJointLimits.knee));
-  setGlbPivotAngle(pivots.leftAnkle, clampAngle(leftAnkle, glbJointLimits.ankle));
-  setGlbPivotAngle(pivots.rightAnkle, clampAngle(rightAnkle, glbJointLimits.ankle));
+  setGlbPivotAngle(pivots.leftHip, legPose.leftHip);
+  setGlbPivotAngle(pivots.rightHip, legPose.rightHip);
+  setGlbPivotAngle(pivots.leftKnee, legPose.leftKnee);
+  setGlbPivotAngle(pivots.rightKnee, legPose.rightKnee);
+  setGlbPivotAngle(pivots.leftAnkle, legPose.leftAnkle);
+  setGlbPivotAngle(pivots.rightAnkle, legPose.rightAnkle);
 }
 
 function lineAngle(line, startIndex = 0, endIndex = 1) {
@@ -3730,6 +4163,9 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
     applyAuthoredPoseReference({
       preserveRopeArm: state.hookActive || state.grappled,
     });
+    applyPoseClipFrame({
+      preserveRopeArm: state.hookActive || state.grappled,
+    });
     glbPoseSmoothingAlpha = 1;
     return;
   }
@@ -3746,6 +4182,7 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
   if (config.useRestRelativeGlbPose) {
     setGlbRelativePose(now);
     applyAuthoredPoseReference();
+    applyPoseClipFrame();
     glbPoseSmoothingAlpha = 1;
     return;
   }
@@ -3807,6 +4244,8 @@ function loadGlbCharacter() {
       glbCharacter.pivotCalibration = new Map();
       glbCharacter.leftWristAnchor = null;
       glbCharacter.ribbonAnchor = null;
+      glbCharacter.centerMassNode = null;
+      glbCharacter.centerMassOffset.set(0, 0, 0);
       glbCharacter.debugMarkers = [];
       glbCharacter.restQuaternions = new Map();
       glbCharacter.currentAngles = new Map();
@@ -3855,6 +4294,7 @@ function loadGlbCharacter() {
       glbCharacter.group = model;
       createPoseHandles();
       resetGlbPivotAngles();
+      alignGlbPelvisToCenterMass();
       syncGlbCharacterTransform();
       syncCharacterSourceVisibility();
       updatePoseHandles();
@@ -4046,7 +4486,7 @@ function syncEditorPane() {
   editorUi.paused = state.paused;
   editorUi.level = currentLevelId;
   editorUi.objectType = objectTypeSelect?.value ?? editorUi.objectType;
-  editorUi.zoom = Math.round(camera.position.z);
+  editorUi.zoom = Math.round(state.animatorMode ? getAnimatorCameraDistance() : camera.position.z);
   editorUi.fxQuality = fxQualitySettings.level;
   editorUi.sfxMuted = sfx.settings.sfxMuted;
   editorUi.sfxVolume = sfx.settings.sfxVolume;
@@ -4135,6 +4575,34 @@ async function initializeEditorPane() {
     fitBuildViewToStage();
     syncEditorPane();
   });
+  addTweakBinding(
+    viewFolder,
+    editorUi,
+    "poseViewYaw",
+    {
+      label: "Pose yaw",
+      min: -config.animatorOrbitYawLimit,
+      max: config.animatorOrbitYawLimit,
+      step: 0.01,
+    },
+    () => applyAnimatorOrbitCamera(),
+  );
+  addTweakBinding(
+    viewFolder,
+    editorUi,
+    "poseViewPitch",
+    {
+      label: "Pose pitch",
+      min: -config.animatorOrbitPitchLimit,
+      max: config.animatorOrbitPitchLimit,
+      step: 0.01,
+    },
+    () => applyAnimatorOrbitCamera(),
+  );
+  viewFolder.addButton({ title: "Reset pose view" }).on("click", () => {
+    resetAnimatorOrbitCamera();
+    syncEditorPane();
+  });
 
   const animatorFolder = tweakPane.addFolder({ title: "Animator" });
   animatorFolder.addButton({ title: "Animate" }).on("click", () => {
@@ -4143,6 +4611,26 @@ async function initializeEditorPane() {
   });
   animatorFolder.addButton({ title: "Save pose" }).on("click", () => {
     saveCurrentCharacterPose();
+    syncEditorPane();
+  });
+  animatorFolder.addButton({ title: "Save frame" }).on("click", () => {
+    saveCurrentCharacterPoseFrame();
+    syncEditorPane();
+  });
+  animatorFolder.addButton({ title: "Clear frames" }).on("click", () => {
+    clearCurrentCharacterPoseFrames();
+    syncEditorPane();
+  });
+  animatorFolder.addButton({ title: "Undo" }).on("click", () => {
+    undoPoseEdit();
+    syncEditorPane();
+  });
+  animatorFolder.addButton({ title: "Rotate -" }).on("click", () => {
+    rotateSelectedPoseJoint(-1);
+    syncEditorPane();
+  });
+  animatorFolder.addButton({ title: "Rotate +" }).on("click", () => {
+    rotateSelectedPoseJoint(1);
     syncEditorPane();
   });
   animatorFolder.addButton({ title: "Reset pose" }).on("click", () => {
@@ -5595,6 +6083,7 @@ function updateSpeedScore(dt, now) {
   }
 
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
+  state.fastestSpeed = Math.max(state.fastestSpeed, speed);
   const speedAmount = Math.max(0, speed - 1.5) * config.scoreSpeedScale * dt;
   if (speedAmount <= 0) return;
   state.scoreFloat += speedAmount * state.multiplier;
@@ -5603,7 +6092,7 @@ function updateSpeedScore(dt, now) {
 
 function moveStartBlock(x, y) {
   if (!startBlock || !startPlatform) return;
-  const blockTop = y;
+  const blockTop = y - startBlock.blockHeight * 0.05;
   const blockCenterX = x - startBlock.blockWidth * 0.5;
   const blockCenterY = blockTop - startBlock.blockHeight * 0.5;
   startBlock.block.position.set(blockCenterX, blockCenterY, -0.05);
@@ -6025,6 +6514,51 @@ function updatePointerOnViewPlane(event, planePoint, target = state.pointerWorld
   return target;
 }
 
+function getAnimatorCameraDistance() {
+  const dx = camera.position.x - state.player.x;
+  const dy = camera.position.y - state.player.y;
+  const dz = camera.position.z;
+  return THREE.MathUtils.clamp(
+    Math.hypot(dx, dy, dz),
+    config.buildMinZoom,
+    config.buildMaxZoom,
+  );
+}
+
+function applyAnimatorOrbitCamera(distance = getAnimatorCameraDistance()) {
+  if (!state.animatorMode || !state.paused) return;
+  const yaw = THREE.MathUtils.clamp(
+    editorUi.poseViewYaw,
+    -config.animatorOrbitYawLimit,
+    config.animatorOrbitYawLimit,
+  );
+  const pitch = THREE.MathUtils.clamp(
+    editorUi.poseViewPitch,
+    -config.animatorOrbitPitchLimit,
+    config.animatorOrbitPitchLimit,
+  );
+  editorUi.poseViewYaw = yaw;
+  editorUi.poseViewPitch = pitch;
+  const safeDistance = THREE.MathUtils.clamp(distance, config.buildMinZoom, config.buildMaxZoom);
+  camera.position.set(
+    state.player.x + Math.sin(yaw) * safeDistance,
+    THREE.MathUtils.clamp(
+      state.player.y + Math.sin(pitch) * safeDistance,
+      config.buildMinY,
+      config.buildMaxY,
+    ),
+    Math.max(0.2, Math.cos(yaw) * Math.cos(pitch)) * safeDistance,
+  );
+  camera.lookAt(state.player.x, state.player.y, 0);
+  updateBuildZoomControl();
+}
+
+function resetAnimatorOrbitCamera() {
+  editorUi.poseViewYaw = 0;
+  editorUi.poseViewPitch = 0;
+  if (state.animatorMode && state.paused) applyAnimatorOrbitCamera();
+}
+
 function pickEditableObject(event) {
   updatePointer(event);
   const hits = raycaster.intersectObjects(editableObjects.map((object) => object.hitMesh), false);
@@ -6035,6 +6569,7 @@ function pickEditableObject(event) {
 
 function startEditorDrag(event) {
   if (!state.paused) return;
+  if (startAnimatorOrbitDrag(event)) return;
   if (startPoseHandleDrag(event)) return;
 
   const object = pickEditableObject(event);
@@ -6051,6 +6586,7 @@ function startEditorDrag(event) {
 }
 
 function dragEditorObject(event) {
+  if (dragAnimatorOrbitCamera(event)) return;
   if (dragPoseHandle(event)) return;
 
   if (state.panningCamera) {
@@ -6066,6 +6602,7 @@ function dragEditorObject(event) {
 }
 
 function stopEditorDrag(event) {
+  if (stopAnimatorOrbitDrag(event)) return;
   if (stopPoseHandleDrag(event)) return;
 
   if (state.panningCamera) {
@@ -6079,6 +6616,35 @@ function stopEditorDrag(event) {
   state.draggedObject = null;
   saveEditorLayout();
   if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+}
+
+function startAnimatorOrbitDrag(event) {
+  if (!state.paused || !state.animatorMode || !(event.altKey || event.button === 1)) return false;
+  event.preventDefault();
+  canvas.setPointerCapture(event.pointerId);
+  state.orbitingAnimatorCamera = true;
+  state.orbitStartPointer.set(event.clientX, event.clientY);
+  state.orbitStartAngles.set(editorUi.poseViewYaw, editorUi.poseViewPitch);
+  return true;
+}
+
+function dragAnimatorOrbitCamera(event) {
+  if (!state.orbitingAnimatorCamera) return false;
+  event.preventDefault();
+  const dx = event.clientX - state.orbitStartPointer.x;
+  const dy = event.clientY - state.orbitStartPointer.y;
+  editorUi.poseViewYaw = state.orbitStartAngles.x - dx * config.animatorOrbitDragSpeed;
+  editorUi.poseViewPitch = state.orbitStartAngles.y - dy * config.animatorOrbitDragSpeed;
+  applyAnimatorOrbitCamera();
+  syncEditorPane();
+  return true;
+}
+
+function stopAnimatorOrbitDrag(event) {
+  if (!state.orbitingAnimatorCamera) return false;
+  state.orbitingAnimatorCamera = false;
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  return true;
 }
 
 function startCameraPan(event) {
@@ -6113,18 +6679,59 @@ function updateBuildZoomControl() {
   if (!buildZoomInput) return;
   buildZoomInput.min = String(config.buildMinZoom);
   buildZoomInput.max = String(config.buildMaxZoom);
-  buildZoomInput.value = String(Math.round(camera.position.z));
+  buildZoomInput.value = String(Math.round(state.animatorMode ? getAnimatorCameraDistance() : camera.position.z));
   syncEditorPane();
+}
+
+function getGameplayZoomMin() {
+  return config.cameraMinZoom;
+}
+
+function getGameplayZoomMax() {
+  return config.cameraMaxZoom + config.cameraManualZoomMax;
+}
+
+function getGameplayZoomValue() {
+  return state.manualCameraZoom ? state.manualCameraZoomZ : camera.position.z;
+}
+
+function updateGameplayZoomControl() {
+  if (!gameZoomInput) return;
+  gameZoomInput.min = String(getGameplayZoomMin());
+  gameZoomInput.max = String(getGameplayZoomMax());
+  gameZoomInput.value = String(THREE.MathUtils.clamp(
+    getGameplayZoomValue(),
+    getGameplayZoomMin(),
+    getGameplayZoomMax(),
+  ).toFixed(1));
+}
+
+function setGameplayZoom(value) {
+  const zoom = THREE.MathUtils.clamp(
+    Number(value),
+    getGameplayZoomMin(),
+    getGameplayZoomMax(),
+  );
+  state.manualCameraZoom = true;
+  state.manualCameraZoomZ = zoom;
+  camera.position.z = zoom;
+  camera.lookAt(camera.position.x, camera.position.y, 0);
+  updateGameplayZoomControl();
 }
 
 function setBuildZoom(value) {
   if (!state.paused) return;
 
-  camera.position.z = THREE.MathUtils.clamp(
+  const zoom = THREE.MathUtils.clamp(
     Number(value),
     config.buildMinZoom,
     config.buildMaxZoom,
   );
+  if (state.animatorMode) {
+    applyAnimatorOrbitCamera(zoom);
+    return;
+  }
+  camera.position.z = zoom;
   camera.lookAt(camera.position.x, camera.position.y, 0);
   updateBuildZoomControl();
 }
@@ -6237,14 +6844,7 @@ function scrollBuildView(event) {
   if (!state.paused) {
     const zoomDelta = event.deltaY * config.cameraWheelZoomSpeed;
     const baseZoom = state.manualCameraZoom ? state.manualCameraZoomZ : camera.position.z;
-    state.manualCameraZoom = true;
-    state.manualCameraZoomZ = THREE.MathUtils.clamp(
-      baseZoom + zoomDelta,
-      config.cameraMinZoom,
-      config.cameraMaxZoom + config.cameraManualZoomMax,
-    );
-    camera.position.z = state.manualCameraZoomZ;
-    camera.lookAt(camera.position.x, camera.position.y, 0);
+    setGameplayZoom(baseZoom + zoomDelta);
     return;
   }
 
@@ -6256,11 +6856,8 @@ function scrollBuildView(event) {
     );
     camera.position.x += event.deltaX * config.buildPanSpeed;
   } else {
-    camera.position.z = THREE.MathUtils.clamp(
-      camera.position.z + event.deltaY * config.buildZoomSpeed,
-      config.buildMinZoom,
-      config.buildMaxZoom,
-    );
+    setBuildZoom((state.animatorMode ? getAnimatorCameraDistance() : camera.position.z) + event.deltaY * config.buildZoomSpeed);
+    return;
   }
   camera.lookAt(camera.position.x, camera.position.y, 0);
   updateBuildZoomControl();
@@ -6270,6 +6867,7 @@ function reset({ resetLevelStats = false } = {}) {
   if (resetLevelStats) {
     state.deaths = 0;
     state.highestMultiplier = 1;
+    state.fastestSpeed = 0;
     state.completedFlips = 0;
   }
   state.player.copy(getLevelStart());
@@ -6322,8 +6920,7 @@ function reset({ resetLevelStats = false } = {}) {
   state.crashExplosionStartedAt = -100;
   state.facing = 1;
   state.cameraZoomOffset = 0;
-  state.manualCameraZoom = false;
-  state.manualCameraZoomZ = config.cameraBaseZoom;
+  updateGameplayZoomControl();
   playerPoseRotationSmoothed = 0;
   resetGlbPivotAngles();
   resetRibbonPhysics();
@@ -6436,6 +7033,11 @@ function decorateControls() {
     [zoomFitButton, "Birds eye", "scan-eye"],
     [animateCharacterButton, state.animatorMode ? "Animating" : "Animate", "bone"],
     [savePoseButton, "Save pose", "save"],
+    [savePoseFrameButton, "Save frame", "circle-dot"],
+    [clearPoseFramesButton, "Clear frames", "trash-2"],
+    [undoPoseEditButton, "Undo", "undo-2"],
+    [rotatePoseNegativeButton, "Rotate -", "rotate-ccw"],
+    [rotatePosePositiveButton, "Rotate +", "rotate-cw"],
     [resetPoseButton, "Reset pose", "rotate-ccw"],
     [exportPoseButton, "Download poses", "download"],
     [muteButton, "", sfx.settings.masterMuted ? "volume-x" : "volume-2"],
@@ -6458,6 +7060,9 @@ function setPaused(paused) {
     state.animatorMode = false;
     state.draggedPoseHandle = null;
     state.manualPoseAngles = {};
+    state.orbitingAnimatorCamera = false;
+    editorUi.poseViewYaw = 0;
+    editorUi.poseViewPitch = 0;
   }
   setIconButtonLabel(togglePauseButton, state.paused ? "Play" : "Pause", state.paused ? "play" : "pause");
   buildTools.classList.toggle("hidden", !state.paused || Boolean(tweakPane));
@@ -6469,6 +7074,7 @@ function setPaused(paused) {
     selectEditorObject(null);
     state.draggedObject = null;
   }
+  updateGameplayZoomControl();
   syncAnimatorControls();
   updatePoseHandles();
   syncEditorPane();
@@ -6518,7 +7124,7 @@ function showLevelComplete() {
 
   state.levelCompleteShown = true;
   completeDeathsEl.textContent = String(state.deaths);
-  completeMultiplierEl.textContent = `${state.highestMultiplier.toFixed(1).replace(".0", "")}x`;
+  completeMultiplierEl.textContent = Math.round(state.fastestSpeed).toString();
   completeFlipsEl.textContent = String(state.completedFlips);
   completeScoreEl.textContent = String(state.score);
   completeRankEl.textContent = getScoreRank(state.score, state.deaths);
@@ -8241,6 +8847,7 @@ function updateCamera(dt) {
   camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetY, 1 - Math.pow(0.004, dt));
   camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, 1 - Math.pow(0.008, dt));
   camera.lookAt(camera.position.x, camera.position.y, 0);
+  updateGameplayZoomControl();
 }
 
 function countActiveEffects() {
@@ -8742,6 +9349,13 @@ gameShell.addEventListener("touchcancel", suppressNativeTouch, { passive: false,
 window.addEventListener("keydown", (event) => {
   sfx.unlock();
   if (event.code === "Space") event.preventDefault();
+  if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") {
+    if (state.animatorMode && state.paused) {
+      event.preventDefault();
+      undoPoseEdit();
+    }
+    return;
+  }
   if (event.repeat) return;
 
   state.keys.add(event.code);
@@ -8809,9 +9423,15 @@ bindGameButton(zoomInButton, () => setBuildZoom(camera.position.z - config.build
 bindGameButton(zoomFitButton, fitBuildViewToStage);
 bindGameButton(animateCharacterButton, () => setAnimatorMode(!state.animatorMode));
 bindGameButton(savePoseButton, saveCurrentCharacterPose);
+bindGameButton(savePoseFrameButton, saveCurrentCharacterPoseFrame);
+bindGameButton(clearPoseFramesButton, clearCurrentCharacterPoseFrames);
+bindGameButton(undoPoseEditButton, undoPoseEdit);
+bindGameButton(rotatePoseNegativeButton, () => rotateSelectedPoseJoint(-1));
+bindGameButton(rotatePosePositiveButton, () => rotateSelectedPoseJoint(1));
 bindGameButton(resetPoseButton, resetCurrentCharacterPoseReference);
 bindGameButton(exportPoseButton, downloadCharacterPoseReferences);
 buildZoomInput.addEventListener("input", () => setBuildZoom(buildZoomInput.value));
+gameZoomInput?.addEventListener("input", () => setGameplayZoom(gameZoomInput.value));
 if (levelSelect) {
   levelSelect.value = currentLevelId;
   levelSelect.addEventListener("change", () => applyLevel(levelSelect.value, { preserveSavedLayout: true }));
