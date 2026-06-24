@@ -1,7 +1,7 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
 
-const GAME_VERSION = "v0.5.73";
+const GAME_VERSION = "v0.5.74";
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -46,9 +46,6 @@ const fxQualitySelect = document.querySelector("#fx-quality");
 const sfxMuteButton = document.querySelector("#sfx-mute");
 const sfxVolumeInput = document.querySelector("#sfx-volume");
 const sfxVolumeValue = document.querySelector("#sfx-volume-value");
-const musicMuteButton = document.querySelector("#music-mute");
-const musicVolumeInput = document.querySelector("#music-volume");
-const musicVolumeValue = document.querySelector("#music-volume-value");
 const levelCompletePanel = document.querySelector("#level-complete");
 const completeDeathsEl = document.querySelector("#complete-deaths");
 const completeMultiplierEl = document.querySelector("#complete-multiplier");
@@ -296,8 +293,6 @@ const editorUi = {
   fxQuality: fxQualitySettings.level,
   sfxMuted: false,
   sfxVolume: 0.7,
-  musicMuted: false,
-  musicVolume: 0.38,
 };
 
 let tweakPane = null;
@@ -494,9 +489,9 @@ const sfx = (() => {
   const storageKey = "hooked.audio.settings.v1";
   const settings = {
     sfxVolume: 0.7,
-    musicVolume: 0.38,
+    musicVolume: 0,
     sfxMuted: false,
-    musicMuted: false,
+    musicMuted: true,
     masterMuted: false,
   };
   if (!AudioContextCtor) {
@@ -506,55 +501,33 @@ const sfx = (() => {
       play() {},
       loadSettings() {},
       setSfxVolume(value) { settings.sfxVolume = THREE.MathUtils.clamp(Number(value), 0, 1); },
-      setMusicVolume(value) { settings.musicVolume = THREE.MathUtils.clamp(Number(value), 0, 1); },
+      setMusicVolume() { settings.musicVolume = 0; },
       setSfxMuted(value) { settings.sfxMuted = Boolean(value); },
-      setMusicMuted(value) { settings.musicMuted = Boolean(value); },
+      setMusicMuted() { settings.musicMuted = true; },
       setMasterMuted(value) { settings.masterMuted = Boolean(value); },
     };
   }
 
   let ctx = null;
   let sfxBus = null;
-  let musicBus = null;
-  let musicFilter = null;
   let lastPlayed = new Map();
   let noiseBuffer = null;
-  let musicTimer = null;
-  let nextMusicTime = 0;
-  let musicStep = 0;
-  const bpm = 92;
-  const stepTime = 60 / bpm / 2;
-  const bassPattern = [55, 55, 82.41, 55, 46.25, 46.25, 73.42, 82.41, 41.2, 41.2, 61.74, 41.2, 49, 49, 73.42, 82.41];
-  const arpPattern = [220, 329.63, 440, 659.25, 246.94, 369.99, 493.88, 739.99];
-  const padChords = [
-    [110, 164.81, 220],
-    [92.5, 146.83, 220],
-    [82.41, 123.47, 196],
-    [98, 146.83, 246.94],
-  ];
 
   function getContext() {
     if (!ctx) {
       ctx = new AudioContextCtor();
       sfxBus = ctx.createGain();
-      musicBus = ctx.createGain();
-      musicFilter = ctx.createBiquadFilter();
-      musicFilter.type = "lowpass";
-      musicFilter.frequency.value = 2100;
-      musicFilter.Q.value = 0.55;
       sfxBus.connect(ctx.destination);
-      musicBus.connect(musicFilter).connect(ctx.destination);
       applyVolumes();
     }
     return ctx;
   }
 
   function applyVolumes() {
-    if (!ctx || !sfxBus || !musicBus) return;
+    if (!ctx || !sfxBus) return;
     const now = ctx.currentTime;
     const masterScale = settings.masterMuted ? 0 : 1;
     sfxBus.gain.setTargetAtTime(settings.sfxMuted ? 0 : settings.sfxVolume * 0.28 * masterScale, now, 0.02);
-    musicBus.gain.setTargetAtTime(settings.musicMuted ? 0 : settings.musicVolume * 0.22 * masterScale, now, 0.08);
   }
 
   function saveSettings() {
@@ -566,10 +539,10 @@ const sfx = (() => {
       const stored = JSON.parse(localStorage.getItem(storageKey));
       if (!stored || typeof stored !== "object") return;
       if (Number.isFinite(stored.sfxVolume)) settings.sfxVolume = THREE.MathUtils.clamp(stored.sfxVolume, 0, 1);
-      if (Number.isFinite(stored.musicVolume)) settings.musicVolume = THREE.MathUtils.clamp(stored.musicVolume, 0, 1);
       if (typeof stored.sfxMuted === "boolean") settings.sfxMuted = stored.sfxMuted;
-      if (typeof stored.musicMuted === "boolean") settings.musicMuted = stored.musicMuted;
       if (typeof stored.masterMuted === "boolean") settings.masterMuted = stored.masterMuted;
+      settings.musicVolume = 0;
+      settings.musicMuted = true;
     } catch {
       localStorage.removeItem(storageKey);
     } finally {
@@ -577,18 +550,9 @@ const sfx = (() => {
     }
   }
 
-  function startMusic() {
-    const audio = getContext();
-    if (musicTimer) return;
-    nextMusicTime = audio.currentTime + 0.08;
-    musicTimer = window.setInterval(scheduleMusic, 120);
-    scheduleMusic();
-  }
-
   function unlock() {
     const audio = getContext();
     if (audio.state === "suspended") audio.resume();
-    startMusic();
   }
 
   function getNoiseBuffer() {
@@ -679,44 +643,6 @@ const sfx = (() => {
     if (audio.currentTime - previous < cooldown) return false;
     lastPlayed.set(name, audio.currentTime);
     return true;
-  }
-
-  function synthKick(start) {
-    tone({ start, type: "sine", frequency: 72, endFrequency: 38, duration: 0.18, gain: 0.42, attack: 0.002, release: 0.12, destination: musicBus });
-  }
-
-  function synthHat(start, open = false) {
-    noise({ start, duration: open ? 0.18 : 0.055, gain: open ? 0.045 : 0.035, filter: 6200, type: "highpass", destination: musicBus });
-  }
-
-  function synthBass(start, frequency) {
-    tone({ start, type: "sawtooth", frequency, endFrequency: frequency * 0.995, duration: stepTime * 0.72, gain: 0.16, attack: 0.006, release: 0.12, filter: { frequency: 480, q: 1.1 }, destination: musicBus });
-    tone({ start, type: "square", frequency: frequency / 2, endFrequency: frequency / 2, duration: stepTime * 0.7, gain: 0.055, attack: 0.006, release: 0.14, filter: { frequency: 360, q: 0.8 }, destination: musicBus });
-  }
-
-  function synthArp(start, frequency) {
-    tone({ start, type: "triangle", frequency, endFrequency: frequency * 1.004, duration: stepTime * 0.42, gain: 0.055, attack: 0.012, release: 0.08, filter: { frequency: 1850, q: 0.9 }, destination: musicBus });
-    tone({ start, type: "sawtooth", frequency: frequency * 2.005, endFrequency: frequency * 2.005, duration: stepTime * 0.36, gain: 0.018, attack: 0.01, release: 0.06, filter: { frequency: 2600, q: 0.6 }, destination: musicBus });
-  }
-
-  function synthPad(start, chord) {
-    for (const [index, frequency] of chord.entries()) {
-      tone({ start, type: "sawtooth", frequency, endFrequency: frequency * 1.002, detune: index % 2 ? -8 : 7, duration: stepTime * 7.5, gain: 0.035, attack: 0.32, release: 0.9, filter: { frequency: 1180, q: 0.45 }, destination: musicBus });
-    }
-  }
-
-  function scheduleMusic() {
-    const audio = getContext();
-    while (nextMusicTime < audio.currentTime + 0.75) {
-      const step = musicStep % 16;
-      if (step % 4 === 0) synthKick(nextMusicTime);
-      if (step % 2 === 1) synthHat(nextMusicTime, step % 8 === 7);
-      synthBass(nextMusicTime, bassPattern[step]);
-      if (step % 2 === 0 || step === 15) synthArp(nextMusicTime + stepTime * 0.52, arpPattern[(musicStep + Math.floor(musicStep / 8)) % arpPattern.length]);
-      if (step === 0) synthPad(nextMusicTime, padChords[Math.floor(musicStep / 16) % padChords.length]);
-      nextMusicTime += stepTime;
-      musicStep += 1;
-    }
   }
 
   const sounds = {
@@ -825,10 +751,10 @@ const sfx = (() => {
       applyVolumes();
     },
     setMusicVolume(value) {
-      settings.musicVolume = THREE.MathUtils.clamp(Number(value), 0, 1);
+      settings.musicVolume = 0;
+      settings.musicMuted = true;
       saveSettings();
       applyVolumes();
-      if (!settings.musicMuted && settings.musicVolume > 0) startMusic();
     },
     setSfxMuted(value) {
       settings.sfxMuted = Boolean(value);
@@ -836,16 +762,15 @@ const sfx = (() => {
       applyVolumes();
     },
     setMusicMuted(value) {
-      settings.musicMuted = Boolean(value);
+      settings.musicMuted = true;
+      settings.musicVolume = 0;
       saveSettings();
       applyVolumes();
-      if (!settings.musicMuted) startMusic();
     },
     setMasterMuted(value) {
       settings.masterMuted = Boolean(value);
       saveSettings();
       applyVolumes();
-      if (!settings.masterMuted && !settings.musicMuted && settings.musicVolume > 0) startMusic();
     },
   };
 })();
@@ -4432,8 +4357,6 @@ function setFxQuality(level) {
 function syncAudioControls() {
   editorUi.sfxMuted = sfx.settings.sfxMuted;
   editorUi.sfxVolume = sfx.settings.sfxVolume;
-  editorUi.musicMuted = sfx.settings.musicMuted;
-  editorUi.musicVolume = sfx.settings.musicVolume;
 
   if (muteButton) {
     setIconButtonLabel(muteButton, sfx.settings.masterMuted ? "" : "", sfx.settings.masterMuted ? "volume-x" : "volume-2");
@@ -4444,24 +4367,13 @@ function syncAudioControls() {
     setIconButtonLabel(sfxMuteButton, sfx.settings.sfxMuted ? "SFX off" : "SFX on", sfx.settings.sfxMuted ? "volume-x" : "volume-2");
     sfxMuteButton.setAttribute("aria-pressed", String(sfx.settings.sfxMuted));
   }
-  if (musicMuteButton) {
-    setIconButtonLabel(musicMuteButton, sfx.settings.musicMuted ? "Music off" : "Music on", sfx.settings.musicMuted ? "volume-x" : "music-2");
-    musicMuteButton.setAttribute("aria-pressed", String(sfx.settings.musicMuted));
-  }
   if (sfxVolumeInput) sfxVolumeInput.value = String(sfx.settings.sfxVolume);
-  if (musicVolumeInput) musicVolumeInput.value = String(sfx.settings.musicVolume);
   if (sfxVolumeValue) sfxVolumeValue.textContent = `${Math.round(sfx.settings.sfxVolume * 100)}%`;
-  if (musicVolumeValue) musicVolumeValue.textContent = `${Math.round(sfx.settings.musicVolume * 100)}%`;
   syncEditorPane();
 }
 
 function setSfxMuted(muted) {
   sfx.setSfxMuted(muted);
-  syncAudioControls();
-}
-
-function setMusicMuted(muted) {
-  sfx.setMusicMuted(muted);
   syncAudioControls();
 }
 
@@ -4475,11 +4387,6 @@ function setSfxVolume(value) {
   syncAudioControls();
 }
 
-function setMusicVolume(value) {
-  sfx.setMusicVolume(value);
-  syncAudioControls();
-}
-
 function syncEditorPane() {
   if (!tweakPane || syncingEditorPane) return;
 
@@ -4490,8 +4397,6 @@ function syncEditorPane() {
   editorUi.fxQuality = fxQualitySettings.level;
   editorUi.sfxMuted = sfx.settings.sfxMuted;
   editorUi.sfxVolume = sfx.settings.sfxVolume;
-  editorUi.musicMuted = sfx.settings.musicMuted;
-  editorUi.musicVolume = sfx.settings.musicVolume;
 
   syncingEditorPane = true;
   for (const binding of tweakPaneBindings) binding.refresh?.();
@@ -4666,14 +4571,6 @@ async function initializeEditorPane() {
     "sfxVolume",
     { label: "SFX volume", min: 0, max: 1, step: 0.01 },
     (value) => setSfxVolume(value),
-  );
-  addTweakBinding(audioFolder, editorUi, "musicMuted", { label: "Mute music" }, (value) => setMusicMuted(value));
-  addTweakBinding(
-    audioFolder,
-    editorUi,
-    "musicVolume",
-    { label: "Music volume", min: 0, max: 1, step: 0.01 },
-    (value) => setMusicVolume(value),
   );
 
   syncEditorPane();
@@ -7042,7 +6939,6 @@ function decorateControls() {
     [exportPoseButton, "Download poses", "download"],
     [muteButton, "", sfx.settings.masterMuted ? "volume-x" : "volume-2"],
     [sfxMuteButton, sfx.settings.sfxMuted ? "SFX off" : "SFX on", sfx.settings.sfxMuted ? "volume-x" : "volume-2"],
-    [musicMuteButton, sfx.settings.musicMuted ? "Music off" : "Music on", sfx.settings.musicMuted ? "volume-x" : "music-2"],
     [resetAnchorsButton, "Reset layout", "map"],
   ];
 
@@ -9440,12 +9336,8 @@ if (fxQualitySelect) {
   fxQualitySelect.addEventListener("change", () => setFxQuality(fxQualitySelect.value));
 }
 bindGameButton(sfxMuteButton, () => setSfxMuted(!sfx.settings.sfxMuted));
-bindGameButton(musicMuteButton, () => setMusicMuted(!sfx.settings.musicMuted));
 if (sfxVolumeInput) {
   sfxVolumeInput.addEventListener("input", () => setSfxVolume(sfxVolumeInput.value));
-}
-if (musicVolumeInput) {
-  musicVolumeInput.addEventListener("input", () => setMusicVolume(musicVolumeInput.value));
 }
 bindGameButton(nextLevelButton, () => reset({ resetLevelStats: true }));
 
