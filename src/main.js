@@ -1,7 +1,7 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
 
-const GAME_VERSION = "v0.5.77";
+const GAME_VERSION = "v0.5.78";
 const GAMEPLAY_KEY_CODES = new Set(["Space", "KeyV", "KeyR", "KeyI", "KeyP", "KeyB", "KeyG"]);
 
 const gameShell = document.querySelector("#game-shell");

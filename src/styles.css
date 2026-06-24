@@ -21,6 +21,7 @@ body,
 #game-shell {
   width: 100%;
   height: 100%;
+  min-height: 100%;
   margin: 0;
   overscroll-behavior: none;
   touch-action: none;
@@ -36,10 +37,19 @@ body,
 body {
   overflow: hidden;
   -webkit-text-size-adjust: 100%;
+  background: #020507;
 }
 
 #game-shell {
-  position: relative;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  width: 100dvw;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
   background:
     linear-gradient(180deg, rgba(35, 52, 76, 0.96), rgba(26, 34, 50, 0.98)),
     #162333;
@@ -72,10 +82,31 @@ body {
   }
 }
 
+@media (max-width: 1079px), (max-height: 1079px) {
+  html,
+  body,
+  #game-shell,
+  #game {
+    width: 100vw;
+    width: 100dvw;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  #game-shell::before,
+  #game-shell::after {
+    height: 0;
+  }
+}
+
 #game {
   display: block;
   width: 100vw;
+  width: 100dvw;
   height: 100vh;
+  height: 100dvh;
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -744,8 +775,8 @@ kbd,
 
 @media (max-width: 760px) {
   #hud {
-    right: 12px;
-    left: 12px;
+    right: max(12px, env(safe-area-inset-right));
+    left: max(12px, env(safe-area-inset-left));
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
@@ -763,17 +794,17 @@ kbd,
 
   #game-zoom-panel {
     top: auto;
-    bottom: 12px;
-    left: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    left: max(12px, env(safe-area-inset-left));
     transform: scale(0.82);
     transform-origin: bottom left;
   }
 
   #editor {
     top: auto;
-    right: 12px;
-    left: 12px;
-    bottom: 12px;
+    right: max(12px, env(safe-area-inset-right));
+    left: max(12px, env(safe-area-inset-left));
+    bottom: max(12px, env(safe-area-inset-bottom));
     max-width: none;
     max-height: 36vh;
   }
@@ -804,8 +835,8 @@ kbd,
 
 @media (pointer: coarse) {
   #hud {
-    top: 8px;
-    left: 8px;
+    top: max(8px, env(safe-area-inset-top));
+    left: max(8px, env(safe-area-inset-left));
     right: auto;
     grid-template-columns: repeat(5, minmax(60px, auto));
     gap: 6px;
@@ -833,20 +864,20 @@ kbd,
 
   #game-zoom-panel {
     top: auto;
-    bottom: 8px;
-    left: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    left: max(8px, env(safe-area-inset-left));
     transform: scale(0.72);
     transform-origin: bottom left;
   }
 
   #editor {
-    top: 8px;
-    right: 8px;
+    top: max(8px, env(safe-area-inset-top));
+    right: max(8px, env(safe-area-inset-right));
     left: auto;
     bottom: auto;
     gap: 6px;
     max-width: min(64vw, 560px);
-    max-height: calc(100vh - 16px);
+    max-height: calc(100dvh - max(16px, env(safe-area-inset-top) + env(safe-area-inset-bottom) + 16px));
     min-height: 32px;
     padding: 6px 7px;
     border-radius: 6px;
@@ -856,7 +887,7 @@ kbd,
   }
 
   #status-center {
-    top: 8px;
+    top: max(8px, env(safe-area-inset-top));
     transform: translateX(-50%) scale(0.78);
     transform-origin: top center;
   }
@@ -881,8 +912,8 @@ kbd,
   }
 
   #restart {
-    right: 8px;
-    bottom: 8px;
+    right: max(8px, env(safe-area-inset-right));
+    bottom: max(8px, env(safe-area-inset-bottom));
     min-width: 82px;
     min-height: 32px;
     border-radius: 6px;
@@ -890,22 +921,22 @@ kbd,
   }
 
   #mute-button {
-    right: 8px;
-    bottom: 46px;
+    right: max(8px, env(safe-area-inset-right));
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 38px);
     width: 34px;
     height: 34px;
     border-radius: 6px;
   }
 
   #game-version {
-    bottom: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
     font-size: 10px;
     transform: translateX(-50%) scale(0.9);
   }
 
   #performance-monitor {
-    left: 8px;
-    bottom: 48px;
+    left: max(8px, env(safe-area-inset-left));
+    bottom: calc(max(48px, env(safe-area-inset-bottom) + 48px));
     font-size: 9px;
     transform: scale(0.9);
     transform-origin: bottom left;
@@ -914,7 +945,7 @@ kbd,
   #level-complete {
     width: min(calc(100vw - 24px), 480px);
     min-width: 0;
-    max-height: min(78vh, 560px);
+    max-height: min(78dvh, 560px);
     padding: 16px;
     gap: 12px;
   }
@@ -948,7 +979,7 @@ kbd,
   }
 
   #status-center {
-    top: 118px;
+    top: calc(max(8px, env(safe-area-inset-top)) + 110px);
   }
 
 }
