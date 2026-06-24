@@ -1,7 +1,7 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
 
-const GAME_VERSION = "v0.5.76";
+const GAME_VERSION = "v0.5.77";
 const GAMEPLAY_KEY_CODES = new Set(["Space", "KeyV", "KeyR", "KeyI", "KeyP", "KeyB", "KeyG"]);
 
 const gameShell = document.querySelector("#game-shell");
@@ -105,6 +105,7 @@ const config = {
   slowMotionCollectionRadius: 1.35,
   tapFlourishMaxDuration: 0.2,
   holdGrappleDelay: 0.12,
+  touchTrickSwipeDistance: 42,
   platformStandOffset: 0.8,
   platformJumpForward: 4.2,
   platformJumpLift: 7.6,
@@ -812,10 +813,43 @@ function bindGameButton(button, action) {
   });
 }
 
-function isRightTouchZone(event) {
-  const rect = canvas.getBoundingClientRect();
-  if (rect.width <= 0) return false;
-  return event.clientX >= rect.left + rect.width * 0.5;
+const touchGesture = {
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  swiped: false,
+};
+
+function beginTouchGesture(event) {
+  touchGesture.active = true;
+  touchGesture.pointerId = event.pointerId;
+  touchGesture.startX = event.clientX;
+  touchGesture.startY = event.clientY;
+  touchGesture.swiped = false;
+}
+
+function updateTouchGesture(event) {
+  if (state.paused || event.pointerType !== "touch" || !touchGesture.active || touchGesture.pointerId !== event.pointerId) {
+    return false;
+  }
+
+  event.preventDefault();
+  if (!touchGesture.swiped) {
+    const dx = event.clientX - touchGesture.startX;
+    const dy = event.clientY - touchGesture.startY;
+    if (Math.hypot(dx, dy) >= config.touchTrickSwipeDistance) {
+      touchGesture.swiped = true;
+      queueFlourish(performance.now() / 1000);
+    }
+  }
+  return true;
+}
+
+function endTouchGesture(event) {
+  if (event.pointerType !== "touch" || !touchGesture.active || touchGesture.pointerId !== event.pointerId) return;
+  touchGesture.active = false;
+  touchGesture.pointerId = null;
 }
 
 const scene = new THREE.Scene();
@@ -6489,6 +6523,7 @@ function startEditorDrag(event) {
 }
 
 function dragEditorObject(event) {
+  if (updateTouchGesture(event)) return;
   if (dragAnimatorOrbitCamera(event)) return;
   if (dragPoseHandle(event)) return;
 
@@ -6697,12 +6732,8 @@ function startPointerControl(event) {
 
   if (event.pointerType === "touch") {
     event.preventDefault();
-    if (isRightTouchZone(event)) {
-      queueFlourish(performance.now() / 1000);
-      return;
-    }
-
     canvas.setPointerCapture(event.pointerId);
+    beginTouchGesture(event);
     state.spaceDownAt = performance.now() / 1000;
     state.spaceIsDown = true;
     state.spaceHadAnchor = false;
@@ -6726,6 +6757,7 @@ function startPointerControl(event) {
 }
 
 function stopPointerControl(event) {
+  endTouchGesture(event);
   if (state.inspectFrozen) {
     event.preventDefault();
     return;
