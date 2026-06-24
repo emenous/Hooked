@@ -228,6 +228,31 @@
         "rightAnkle": 0.3
       }
     },
+    "airTwirl": {
+      "key": "airTwirl",
+      "savedAt": "2026-06-24T00:00:00.000Z",
+      "source": "project_baseline",
+      "notes": "Primary debug twirl guide. Compact body spin with arms tucked close and legs pulled in so the silhouette reads as a tight mid-air twirl.",
+      "blend": 0.82,
+      "angles": {
+        "pelvis": 0.62,
+        "waist": 0.38,
+        "chest": -0.28,
+        "neck": 0.18,
+        "leftShoulder": 1.02,
+        "leftElbow": 1.18,
+        "leftWrist": -0.22,
+        "rightShoulder": 0.86,
+        "rightElbow": 1.08,
+        "rightWrist": 0.2,
+        "leftHip": 1.1,
+        "leftKnee": 1.34,
+        "leftAnkle": 0.18,
+        "rightHip": 0.9,
+        "rightKnee": 1.22,
+        "rightAnkle": 0.14
+      }
+    },
     "barrelRoll": {
       "key": "barrelRoll",
       "savedAt": "2026-06-23T00:00:00.000Z",

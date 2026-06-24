@@ -100,7 +100,6 @@ body {
 #controls,
 #game-zoom-panel,
 #mute-button,
-#flourish-button,
 #editor,
 #level-complete,
 #game-version,
@@ -717,42 +716,6 @@ body.perf-danger #performance-monitor {
   background: #f2ff68;
 }
 
-#flourish-button {
-  position: absolute;
-  right: 22px;
-  bottom: 78px;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  flex-direction: column;
-  width: 76px;
-  height: 76px;
-  border: 2px solid rgba(198, 238, 255, 0.72);
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.22), transparent 27%),
-    linear-gradient(145deg, rgba(20, 225, 255, 0.92), rgba(249, 40, 140, 0.86));
-  color: #f7fff8;
-  cursor: pointer;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 900;
-  text-transform: uppercase;
-  box-shadow:
-    0 0 18px rgba(39, 222, 255, 0.42),
-    0 12px 32px rgba(0, 0, 0, 0.42);
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
-}
-
-#flourish-button svg {
-  width: 18px;
-  height: 18px;
-}
-
 button,
 kbd,
 #hud,
@@ -765,7 +728,6 @@ kbd,
 #editor *,
 #restart,
 #mute-button,
-#flourish-button,
 #status-center,
 #status-center *,
 #level-complete,
@@ -778,10 +740,6 @@ kbd,
   -webkit-touch-callout: none;
   -webkit-user-drag: none;
   touch-action: manipulation;
-}
-
-#flourish-button:active {
-  transform: scale(0.94);
 }
 
 @media (max-width: 760px) {
@@ -982,9 +940,6 @@ kbd,
     font-size: 21px;
   }
 
-  #flourish-button {
-    display: flex;
-  }
 }
 
 @media (pointer: coarse) and (orientation: portrait) {
@@ -996,15 +951,7 @@ kbd,
     top: 118px;
   }
 
-  #flourish-button {
-    right: 18px;
-    bottom: 70px;
-  }
 }
 
 @media (pointer: coarse) and (orientation: landscape) {
-  #flourish-button {
-    right: 18px;
-    bottom: 58px;
-  }
 }

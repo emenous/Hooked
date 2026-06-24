@@ -1,7 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
 
-const GAME_VERSION = "v0.5.74";
+const GAME_VERSION = "v0.5.76";
+const GAMEPLAY_KEY_CODES = new Set(["Space", "KeyV", "KeyR", "KeyI", "KeyP", "KeyB", "KeyG"]);
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -18,7 +19,6 @@ const multiplierPillEl = document.querySelector("#multiplier-pill");
 const multiplierCountEl = document.querySelector("#multiplier-count");
 const restartButton = document.querySelector("#restart");
 const muteButton = document.querySelector("#mute-button");
-const flourishButton = document.querySelector("#flourish-button");
 const resetAnchorsButton = document.querySelector("#reset-anchors");
 const togglePauseButton = document.querySelector("#toggle-pause");
 const editorPanel = document.querySelector("#editor");
@@ -97,6 +97,7 @@ const config = {
   flourishCooldown: 0.42,
   flourishBufferWindow: 0.18,
   flourishSpinDuration: 0.55,
+  twirlSpinDuration: 0.68,
   slowMotionForwardScale: 0.25,
   slowMotionTrickScale: 0.25,
   slowMotionDuration: 3,
@@ -345,6 +346,7 @@ const state = {
   spaceIsDown: false,
   spaceHadAnchor: false,
   flourishSpinRemaining: 0,
+  flourishDuration: config.flourishSpinDuration,
   flourishFlipDirection: 1,
   flourishCompletionArmed: false,
   hookWrapPulse: 0,
@@ -410,7 +412,9 @@ function previewCharacterPose(overrides = {}) {
     facing: state.facing,
     freeArmSwingMemory: state.freeArmSwingMemory,
     flourishSpinRemaining: state.flourishSpinRemaining,
+    flourishDuration: state.flourishDuration,
     flourishFlipDirection: state.flourishFlipDirection,
+    flourishVariant: state.flourishVariant,
     gameOver: state.gameOver,
     finished: state.finished,
     lastAppliedPose: poseReferenceState.lastApplied,
@@ -441,7 +445,9 @@ function previewCharacterPose(overrides = {}) {
     state.facing = overrides.facing ?? state.facing;
     state.freeArmSwingMemory = overrides.freeArmSwingMemory ?? 0;
     state.flourishSpinRemaining = overrides.flourishSpinRemaining ?? 0;
+    state.flourishDuration = overrides.flourishDuration ?? getFlourishDuration(overrides.flourishVariant ?? state.flourishVariant);
     state.flourishFlipDirection = overrides.flourishFlipDirection ?? state.flourishFlipDirection;
+    state.flourishVariant = overrides.flourishVariant ?? state.flourishVariant;
     state.gameOver = overrides.gameOver ?? false;
     state.finished = overrides.finished ?? false;
     if (overrides.animation) state.playerAnimation = overrides.animation;
@@ -449,9 +455,7 @@ function previewCharacterPose(overrides = {}) {
     playerPoseRotationSmoothed = overrides.poseRotation ?? 0;
     playerMesh.position.copy(state.player);
     const now = Number.isFinite(overrides.now) ? overrides.now : performance.now() / 1000;
-    const flourishProgress = state.flourishSpinRemaining > 0
-      ? 1 - state.flourishSpinRemaining / config.flourishSpinDuration
-      : 0;
+    const flourishProgress = getFlourishProgress();
     applyPlayerAnimation(now, flourishProgress, overrides.dt ?? config.physicsStep);
     return describeCharacterPoseHealth();
   } finally {
@@ -469,7 +473,9 @@ function previewCharacterPose(overrides = {}) {
     state.facing = savedState.facing;
     state.freeArmSwingMemory = savedState.freeArmSwingMemory;
     state.flourishSpinRemaining = savedState.flourishSpinRemaining;
+    state.flourishDuration = savedState.flourishDuration;
     state.flourishFlipDirection = savedState.flourishFlipDirection;
+    state.flourishVariant = savedState.flourishVariant;
     state.gameOver = savedState.gameOver;
     state.finished = savedState.finished;
     poseReferenceState.lastApplied = savedState.lastAppliedPose;
@@ -804,6 +810,12 @@ function bindGameButton(button, action) {
 
     action();
   });
+}
+
+function isRightTouchZone(event) {
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0) return false;
+  return event.clientX >= rect.left + rect.width * 0.5;
 }
 
 const scene = new THREE.Scene();
@@ -2123,7 +2135,7 @@ function syncCharacterSourceVisibility() {
   updatePoseHandles();
 }
 
-function syncGlbCharacterTransform(facing = state.facing, flourishFlip = 0) {
+function syncGlbCharacterTransform(facing = state.facing, flourishFlip = 0, flourishTwirl = 0) {
   const visualScale = characterVisualScale * glbCharacterBaseScale;
   playerAssetRoot.scale.set(
     facing * visualScale,
@@ -2131,6 +2143,7 @@ function syncGlbCharacterTransform(facing = state.facing, flourishFlip = 0) {
     facing * visualScale,
   );
   playerAssetRoot.rotation.z = flourishFlip;
+  playerAssetRoot.rotation.y = flourishTwirl;
   playerRibbonLayer.scale.set(facing * characterVisualScale, characterVisualScale, 1);
   playerRibbonLayer.rotation.z = flourishFlip;
 }
@@ -2600,13 +2613,12 @@ function describeCharacterPoseSnapshot() {
       distances[key] = roundRigNumber(distance);
       compactRadius = Math.max(compactRadius, distance);
     }
-    const flourishProgress = state.flourishSpinRemaining > 0
-      ? 1 - state.flourishSpinRemaining / config.flourishSpinDuration
-      : 0;
+    const flourishProgress = getFlourishProgress();
     snapshot.flourish = {
       active: state.flourishSpinRemaining > 0,
+      variant: state.flourishVariant,
       progress: roundRigNumber(flourishProgress),
-      tuck: roundRigNumber(state.flourishSpinRemaining > 0 ? Math.sin(flourishProgress * Math.PI) : 0),
+      tuck: roundRigNumber(getFlourishTuck()),
       compactRadius: roundRigNumber(compactRadius),
       distances,
     };
@@ -2912,7 +2924,7 @@ function getCurrentPoseReferenceKey() {
 
 function getCurrentPoseClipPhase() {
   if (state.flourishSpinRemaining > 0) {
-    return THREE.MathUtils.clamp(1 - state.flourishSpinRemaining / config.flourishSpinDuration, 0, 1);
+    return getFlourishProgress();
   }
 
   const ropeTarget = state.grappled && state.anchor
@@ -3733,10 +3745,7 @@ function setGlbRelativePose(now) {
   const grappling = state.grappled && state.anchor;
   const fallTuck = clampJoint(-state.velocity.y / 20, -0.2, 0.45);
   const swing = clampJoint(localVelocityX / 20, -0.55, 0.65);
-  const flourishProgress = state.flourishSpinRemaining > 0
-    ? 1 - state.flourishSpinRemaining / config.flourishSpinDuration
-    : 0;
-  const tuck = state.flourishSpinRemaining > 0 ? Math.sin(flourishProgress * Math.PI) : 0;
+  const tuck = getFlourishTuck();
   const rollTuck = state.flourishSpinRemaining > 0 ? THREE.MathUtils.smootherstep(tuck, 0, 1) : 0;
 
   const pelvis = speedLean * 0.22 - verticalLean * 0.12;
@@ -3906,10 +3915,7 @@ function setGlbRagdollLitePose(now, dt = config.physicsStep) {
   const fallAmount = THREE.MathUtils.clamp(-localVelocityY / 18, 0, 1);
   const riseAmount = THREE.MathUtils.clamp(localVelocityY / 18, 0, 1);
   const speedAmount = THREE.MathUtils.clamp(speed / 28, 0, 1);
-  const flourishProgress = state.flourishSpinRemaining > 0
-    ? 1 - state.flourishSpinRemaining / config.flourishSpinDuration
-    : 0;
-  const tuck = state.flourishSpinRemaining > 0 ? Math.sin(flourishProgress * Math.PI) : 0;
+  const tuck = getFlourishTuck();
   const rollTuck = state.flourishSpinRemaining > 0 ? THREE.MathUtils.smootherstep(tuck, 0, 1) : 0;
 
   if (!airborne && !hooked) {
@@ -6691,6 +6697,11 @@ function startPointerControl(event) {
 
   if (event.pointerType === "touch") {
     event.preventDefault();
+    if (isRightTouchZone(event)) {
+      queueFlourish(performance.now() / 1000);
+      return;
+    }
+
     canvas.setPointerCapture(event.pointerId);
     state.spaceDownAt = performance.now() / 1000;
     state.spaceIsDown = true;
@@ -6803,6 +6814,7 @@ function reset({ resetLevelStats = false } = {}) {
   state.spaceIsDown = false;
   state.spaceHadAnchor = false;
   state.flourishSpinRemaining = 0;
+  state.flourishDuration = config.flourishSpinDuration;
   state.flourishFlipDirection = 1;
   state.flourishCompletionArmed = false;
   state.hookWrapPulse = 0;
@@ -7060,6 +7072,25 @@ function collectSlowMotionRing() {
 
 function chooseFlourishVariant() {
   return "backFlip";
+}
+
+function getFlourishDuration(variant = state.flourishVariant) {
+  return variant === "airTwirl" ? config.twirlSpinDuration : config.flourishSpinDuration;
+}
+
+function getFlourishProgress() {
+  if (state.flourishSpinRemaining <= 0) return 0;
+  return THREE.MathUtils.clamp(1 - state.flourishSpinRemaining / getFlourishDuration(), 0, 1);
+}
+
+function isTwirlFlourish() {
+  return state.flourishVariant === "airTwirl";
+}
+
+function getFlourishTuck() {
+  if (state.flourishSpinRemaining <= 0) return 0;
+  const tuck = Math.sin(getFlourishProgress() * Math.PI);
+  return isTwirlFlourish() ? tuck * 0.32 : tuck;
 }
 
 function distanceFromSegmentToPoint(start, end, point) {
@@ -7559,20 +7590,22 @@ function canFlourish(now) {
 function flourish(now) {
   if (!canFlourish(now)) return;
   if (state.flourishSpinRemaining > 0) return;
+  state.flourishVariant = chooseFlourishVariant();
   sfx.play("flourish");
   releaseGrapple();
-  state.velocity.x += config.flourishBoost;
-  state.velocity.y += config.flourishLift;
+  const twirl = isTwirlFlourish();
+  state.velocity.x += config.flourishBoost * (twirl ? 0.72 : 1);
+  state.velocity.y += config.flourishLift * (twirl ? 1.18 : 1);
   state.lastFlourishAt = now;
   state.flourishPulse = 1;
-  state.flourishSpinRemaining = config.flourishSpinDuration;
+  state.flourishSpinRemaining = getFlourishDuration(state.flourishVariant);
+  state.flourishDuration = state.flourishSpinRemaining;
   state.flourishFlipDirection = state.velocity.x >= 0 ? 1 : -1;
   state.flourishCompletionArmed = true;
-  state.flourishVariant = chooseFlourishVariant();
   if (isSlowMotionActive()) {
-    addScore(9, "slow-flourish", now);
+    addScore(twirl ? 11 : 9, twirl ? "slow-twirl" : "slow-flourish", now);
   } else {
-    addScore(5, "flourish", now);
+    addScore(twirl ? 7 : 5, twirl ? "twirl" : "flourish", now);
   }
 }
 
@@ -8975,7 +9008,7 @@ function updatePlayerRibbonPhysics(now, dt, flourishFlip = 0) {
   const ribbonDt = Math.min(dt * ribbonTimeScale, 0.033);
   const idleHang = !state.hasLaunched || state.grounded || state.playerAnimation === "idleHang";
   const flourishTuck = state.flourishSpinRemaining > 0
-    ? Math.sin((1 - state.flourishSpinRemaining / config.flourishSpinDuration) * Math.PI)
+    ? Math.sin(getFlourishProgress() * Math.PI)
     : 0;
   const localAnchors = [
     [-0.3, 0.92 + breathY],
@@ -9059,6 +9092,7 @@ function resolvePlayerAnimationState() {
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
   if (state.gameOver) return "hit";
   if (!state.hasLaunched) return "idleHang";
+  if (state.flourishSpinRemaining > 0 && isTwirlFlourish()) return "airTwirl";
   if (state.flourishSpinRemaining > 0) return speed > 14 ? "barrelRoll" : "midFlip";
   if (state.hookActive && !state.grappled) return "throwHook";
   if (state.grappled && state.velocity.y < -2.5) return "downSwing";
@@ -9100,11 +9134,12 @@ function applyPlayerAnimation(now, flourishProgress, dt) {
   state.playerAnimation = resolvePlayerAnimationState();
   updateFacingDirection();
   let flourishFlip = 0;
+  let flourishTwirl = 0;
   let flourishTuck = 0;
   if (flourishProgress > 0) {
-    flourishTuck = Math.sin(flourishProgress * Math.PI);
-    const easedFlip = THREE.MathUtils.smootherstep(flourishProgress, 0, 1);
-    flourishFlip = easedFlip * Math.PI * 2 * state.flourishFlipDirection;
+    flourishTuck = getFlourishTuck();
+    const easedFlourish = THREE.MathUtils.smootherstep(flourishProgress, 0, 1);
+    flourishFlip = easedFlourish * Math.PI * 2 * state.flourishFlipDirection;
   }
   let poseRotation = THREE.MathUtils.clamp(-state.velocity.x * 0.035, -0.5, 0.5);
 
@@ -9123,7 +9158,7 @@ function applyPlayerAnimation(now, flourishProgress, dt) {
   }
 
   if (flourishProgress > 0) {
-    poseRotation += -0.14 * state.flourishFlipDirection * flourishTuck;
+    poseRotation += (isTwirlFlourish() ? 0.1 : -0.14) * state.flourishFlipDirection * flourishTuck;
   }
   const rotationAlpha = dt <= 0 ? 0 : 1 - Math.exp(-dt * 16);
   playerPoseRotationSmoothed = normalizeAngle(
@@ -9134,7 +9169,7 @@ function applyPlayerAnimation(now, flourishProgress, dt) {
   playerMesh.rotation.y = 0;
   const pulseScale = 1 + state.flourishPulse * 0.08;
   playerMesh.scale.set(pulseScale, pulseScale, 1);
-  syncGlbCharacterTransform(state.facing, flourishFlip);
+  syncGlbCharacterTransform(state.facing, flourishFlip, flourishTwirl);
   if (!config.freezeGlbCharacterPose) poseGlbCharacterFromPhysics(now, dt);
   updatePlayerRibbonPhysics(now, dt, flourishFlip);
 
@@ -9204,10 +9239,7 @@ function tick(time) {
   state.stuntBurstPulse = Math.max(0, state.stuntBurstPulse - dt * 3.4);
   updateCrashExplosion(dt, now);
   playerMesh.position.copy(state.player);
-  const flourishProgress =
-    state.flourishSpinRemaining > 0
-      ? 1 - state.flourishSpinRemaining / config.flourishSpinDuration
-      : 0;
+  const flourishProgress = getFlourishProgress();
   applyPlayerAnimation(now, flourishProgress, dt);
   updatePoseHandles();
 
@@ -9243,7 +9275,6 @@ gameShell.addEventListener("touchend", suppressNativeTouch, { passive: false, ca
 gameShell.addEventListener("touchcancel", suppressNativeTouch, { passive: false, capture: true });
 
 window.addEventListener("keydown", (event) => {
-  sfx.unlock();
   if (event.code === "Space") event.preventDefault();
   if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") {
     if (state.animatorMode && state.paused) {
@@ -9254,7 +9285,10 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.repeat) return;
 
-  state.keys.add(event.code);
+  if (!GAMEPLAY_KEY_CODES.has(event.code)) return;
+
+  sfx.unlock();
+  if (event.code === "Space") state.keys.add(event.code);
 
   if (event.code === "Space") {
     state.spaceDownAt = performance.now() / 1000;
@@ -9301,11 +9335,6 @@ canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 canvas.addEventListener("wheel", scrollBuildView, { passive: false });
 bindGameButton(restartButton, reset);
 bindGameButton(muteButton, () => setMasterMuted(!sfx.settings.masterMuted));
-flourishButton.addEventListener("pointerdown", (event) => {
-  event.preventDefault();
-  event.stopPropagation();
-  queueFlourish(performance.now() / 1000);
-});
 bindGameButton(resetAnchorsButton, () => {
   resetEditorLayout();
   reset();
