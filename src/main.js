@@ -1,7 +1,7 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
 
-const GAME_VERSION = "v0.5.78";
+const GAME_VERSION = "v0.5.88";
 const GAMEPLAY_KEY_CODES = new Set(["Space", "KeyV", "KeyR", "KeyI", "KeyP", "KeyB", "KeyG"]);
 
 const gameShell = document.querySelector("#game-shell");
@@ -23,6 +23,7 @@ const resetAnchorsButton = document.querySelector("#reset-anchors");
 const togglePauseButton = document.querySelector("#toggle-pause");
 const editorPanel = document.querySelector("#editor");
 const editorPane = document.querySelector("#editor-pane");
+const poseEditorHint = document.querySelector("#pose-editor-hint");
 const buildTools = document.querySelector("#build-tools");
 const levelSelect = document.querySelector("#level-select");
 const objectTypeSelect = document.querySelector("#object-type");
@@ -381,6 +382,9 @@ const state = {
   panStartCamera: new THREE.Vector3(),
   orbitStartPointer: new THREE.Vector2(),
   orbitStartAngles: new THREE.Vector2(),
+  orbitStartDistance: config.cameraBaseZoom,
+  poseEditorNotice: "",
+  poseEditorNoticeUntil: 0,
   paused: false,
 };
 
@@ -783,6 +787,13 @@ const sfx = (() => {
 })();
 
 function suppressNativeTouch(event) {
+  if (
+    event.target instanceof Element &&
+    event.target.closest("button, input, select, textarea, label, [role='button'], #editor, #game-zoom-panel, #level-complete")
+  ) {
+    return;
+  }
+
   if (event.touches.length > 1 || gameShell.contains(event.target)) {
     event.preventDefault();
     window.getSelection()?.removeAllRanges();
@@ -2068,6 +2079,15 @@ const glbPivotDriverAxes = {
   rightAnkle: "z",
 };
 
+const glbScreenPlanePivotKeys = new Set([
+  "leftElbow",
+  "rightElbow",
+  "leftWrist",
+  "rightWrist",
+  "leftAnkle",
+  "rightAnkle",
+]);
+
 const glbPivotChildKeys = {
   root: "pelvis",
   torso: "pelvis",
@@ -2120,6 +2140,31 @@ const poseHandleDefinitions = [
   { key: "rightKnee", driverKey: "rightHip" },
   { key: "rightAnkle", driverKey: "rightKnee" },
 ];
+
+const poseJointLabels = {
+  root: "root",
+  pelvis: "pelvis",
+  waist: "waist",
+  chest: "chest",
+  neck: "neck",
+  head: "head",
+  leftShoulder: "left shoulder",
+  leftElbow: "left elbow",
+  leftWrist: "left wrist",
+  rightShoulder: "right shoulder",
+  rightElbow: "right elbow",
+  rightWrist: "right wrist",
+  leftHip: "left hip",
+  leftKnee: "left knee",
+  leftAnkle: "left ankle",
+  rightHip: "right hip",
+  rightKnee: "right knee",
+  rightAnkle: "right ankle",
+};
+
+function getPoseJointLabel(key) {
+  return poseJointLabels[key] ?? key ?? "none";
+}
 
 const rigSegmentDefinitions = [
   { key: "torso", from: "pelvis", to: "chest" },
@@ -2201,7 +2246,18 @@ function getGlbPivotKey(pivot) {
 }
 
 function getGlbPivotAxisName(key) {
+  if (glbScreenPlanePivotKeys.has(key)) return "screen";
   return glbPivotDriverAxes[key] ?? "z";
+}
+
+function getGlbPivotRotationAxis(key, restQuaternion = null) {
+  if (glbScreenPlanePivotKeys.has(key) && restQuaternion) {
+    return glbPoseAxisScratch
+      .copy(glbPoseWorldScreenAxis)
+      .applyQuaternion(glbPoseRotationScratch.copy(restQuaternion).invert())
+      .normalize();
+  }
+  return glbPoseAxes[getGlbPivotAxisName(key)] ?? glbPoseAxes.z;
 }
 
 function getGlbPivotChild(key) {
@@ -2235,7 +2291,7 @@ function getGlbPivotCalibration(key) {
   const pivot = glbCharacter.pivots[key];
   const child = getGlbPivotChild(key);
   const restQuaternion = glbCharacter.restQuaternions.get(pivot);
-  const axis = glbPoseAxes[getGlbPivotAxisName(key)] ?? glbPoseAxes.z;
+  const axis = getGlbPivotRotationAxis(key, restQuaternion);
   const calibration = {
     restScreenAngle: 0,
     screenSign: 1,
@@ -2275,7 +2331,7 @@ function setGlbPivotAngle(pivot, angle, immediate = false) {
   glbCharacter.currentAngles.set(pivot, target);
   const restQuaternion = glbCharacter.restQuaternions.get(pivot) ?? pivot.quaternion;
   const key = getGlbPivotKey(pivot);
-  const axis = glbPoseAxes[getGlbPivotAxisName(key)] ?? glbPoseAxes.z;
+  const axis = getGlbPivotRotationAxis(key, restQuaternion);
   const calibration = getGlbPivotCalibration(key);
   const localTarget = target / (calibration.screenSign || 1);
   glbPoseRotationScratch.setFromAxisAngle(axis, localTarget);
@@ -2786,8 +2842,10 @@ const glbPoseRotationScratch = new THREE.Quaternion();
 const glbPoseTargetScratch = new THREE.Quaternion();
 const glbPoseCalibrationVectorA = new THREE.Vector3();
 const glbPoseCalibrationVectorB = new THREE.Vector3();
+const glbPoseAxisScratch = new THREE.Vector3();
+const glbPoseWorldScreenAxis = new THREE.Vector3(0, 0, 1);
 
-const glbJointLimits = {
+var glbJointLimits = {
   torso: [-0.32, 0.32],
   neck: [-0.24, 0.24],
   shoulder: [-2.45, 2.45],
@@ -2800,7 +2858,7 @@ const glbJointLimits = {
   ankle: [-swingPoseTuning.footWindMaxClockwise, 0.04],
 };
 
-const glbJointLimitOverrides = {
+var glbJointLimitOverrides = {
   leftAnkle: glbJointLimits.ankle,
   rightAnkle: glbJointLimits.ankle,
 };
@@ -2981,15 +3039,18 @@ function getCurrentPoseClipPhase() {
 }
 
 function getPivotLimit(key) {
-  if (glbJointLimitOverrides[key]) return glbJointLimitOverrides[key];
-  if (key === "root" || key === "pelvis" || key === "waist" || key === "chest") return glbJointLimits.torso;
-  if (key === "neck" || key === "head") return glbJointLimits.neck;
-  if (key.includes("Shoulder")) return glbJointLimits.shoulder;
-  if (key.includes("Elbow")) return glbJointLimits.elbow;
-  if (key.includes("Wrist")) return glbJointLimits.wrist;
-  if (key.includes("Hip")) return glbJointLimits.hip;
-  if (key.includes("Knee")) return glbJointLimits.knee;
-  if (key.includes("Ankle")) return glbJointLimits.ankle;
+  const limits = glbJointLimits;
+  const overrides = glbJointLimitOverrides;
+  if (!limits) return [-Math.PI, Math.PI];
+  if (overrides?.[key]) return overrides[key];
+  if (key === "root" || key === "pelvis" || key === "waist" || key === "chest") return limits.torso;
+  if (key === "neck" || key === "head") return limits.neck;
+  if (key.includes("Shoulder")) return limits.shoulder;
+  if (key.includes("Elbow")) return limits.elbow;
+  if (key.includes("Wrist")) return limits.wrist;
+  if (key.includes("Hip")) return limits.hip;
+  if (key.includes("Knee")) return limits.knee;
+  if (key.includes("Ankle")) return limits.ankle;
   return [-Math.PI, Math.PI];
 }
 
@@ -3325,12 +3386,12 @@ function createPoseHandles() {
 
 function updatePoseHandles() {
   poseHandleLayer.visible = state.animatorMode && state.paused && glbCharacter.loaded;
+  updatePoseEditorHint();
   if (!poseHandleLayer.visible) return;
   for (const handle of poseHandles) {
     const pivot = glbCharacter.pivots[handle.key];
     if (!pivot) continue;
     pivot.getWorldPosition(handle.mesh.position);
-    handle.mesh.position.z = 0.82;
     handle.mesh.material = state.draggedPoseHandle === handle
       ? poseHandleActiveMaterial
       : state.selectedPoseHandle === handle
@@ -3340,19 +3401,53 @@ function updatePoseHandles() {
   }
 }
 
+let lastPoseEditorHintText = "";
+
+function setPoseEditorNotice(message, duration = 2.6) {
+  state.poseEditorNotice = message;
+  state.poseEditorNoticeUntil = performance.now() / 1000 + duration;
+  updatePoseEditorHint();
+}
+
+function updatePoseEditorHint() {
+  if (poseEditorHint) {
+    poseEditorHint.classList.toggle("hidden", !state.paused);
+    let hintText = "";
+    if (!state.paused) {
+      hintText = "";
+    } else if (state.poseEditorNotice && performance.now() / 1000 < state.poseEditorNoticeUntil) {
+      hintText = state.poseEditorNotice;
+    } else if (!state.animatorMode) {
+      state.poseEditorNotice = "";
+      hintText = "Open Animator to edit the puppet. Build sections with chevrons expand and collapse.";
+    } else if (state.selectedPoseHandle) {
+      state.poseEditorNotice = "";
+      hintText = `Selected: ${getPoseJointLabel(state.selectedPoseHandle.key)}. Drag this dot to move the ${getPoseJointLabel(state.selectedPoseHandle.driverKey)} chain; Rotate +/- turns the selected ${getPoseJointLabel(state.selectedPoseHandle.key)} joint. Right/Alt drag the game view to orbit.`;
+    } else {
+      state.poseEditorNotice = "";
+      hintText = "Animator: tap a cyan joint dot. Dragging moves limb endpoints; Rotate +/- turns the selected joint. Right/Alt drag the game view to orbit.";
+    }
+    if (hintText !== lastPoseEditorHintText) {
+      poseEditorHint.textContent = hintText;
+      lastPoseEditorHintText = hintText;
+    }
+  }
+}
+
 function syncAnimatorControls() {
   setIconButtonLabel(animateCharacterButton, state.animatorMode ? "Animating" : "Animate", "bone");
   setIconButtonLabel(savePoseButton, "Save pose", "save");
   setIconButtonLabel(savePoseFrameButton, "Save frame", "circle-dot");
   setIconButtonLabel(clearPoseFramesButton, "Clear frames", "trash-2");
   setIconButtonLabel(undoPoseEditButton, "Undo", "undo-2");
-  setIconButtonLabel(rotatePoseNegativeButton, "Rotate -", "rotate-ccw");
-  setIconButtonLabel(rotatePosePositiveButton, "Rotate +", "rotate-cw");
+  setIconButtonLabel(rotatePoseNegativeButton, "Rotate joint -", "rotate-ccw");
+  setIconButtonLabel(rotatePosePositiveButton, "Rotate joint +", "rotate-cw");
   setIconButtonLabel(resetPoseButton, "Reset pose", "rotate-ccw");
   setIconButtonLabel(exportPoseButton, "Download poses", "download");
   animateCharacterButton?.setAttribute("aria-pressed", String(state.animatorMode));
   animateCharacterButton?.classList.toggle("active", state.animatorMode);
   if (undoPoseEditButton) undoPoseEditButton.disabled = state.poseUndoStack.length === 0;
+  updatePoseEditorHint();
 }
 
 function setAnimatorMode(enabled) {
@@ -3408,7 +3503,10 @@ function getCurrentPoseClip() {
 }
 
 function saveCurrentCharacterPose() {
-  if (!glbCharacter.loaded) return;
+  if (!glbCharacter.loaded) {
+    setPoseEditorNotice("Pose not saved: GLB character is not loaded.");
+    return false;
+  }
   const key = getCurrentPoseReferenceKey();
   const angles = state.animatorMode
     ? { ...state.manualPoseAngles, ...captureCurrentGlbPoseAngles() }
@@ -3424,10 +3522,15 @@ function saveCurrentCharacterPose() {
   state.manualPoseAngles = { ...poseReferenceState.poses[key].angles };
   saveCharacterPoseReferences();
   syncAnimatorControls();
+  setPoseEditorNotice(`Saved pose override: ${key}.`);
+  return true;
 }
 
 function saveCurrentCharacterPoseFrame() {
-  if (!glbCharacter.loaded) return;
+  if (!glbCharacter.loaded) {
+    setPoseEditorNotice("Frame not saved: GLB character is not loaded.");
+    return false;
+  }
   const key = getCurrentPoseReferenceKey();
   const phase = Number(getCurrentPoseClipPhase().toFixed(4));
   const angles = state.animatorMode
@@ -3452,15 +3555,20 @@ function saveCurrentCharacterPoseFrame() {
   rebuildCharacterPoseReferences();
   saveCharacterPoseClips();
   syncAnimatorControls();
+  setPoseEditorNotice(`Saved ${key} frame at ${phase}. ${clip.frames.length} frame${clip.frames.length === 1 ? "" : "s"} stored.`);
+  return true;
 }
 
 function clearCurrentCharacterPoseFrames() {
   const key = getCurrentPoseReferenceKey();
+  const removedCount = poseReferenceState.localClips[key]?.frames?.length ?? 0;
   delete poseReferenceState.localClips[key];
   rebuildCharacterPoseReferences();
   saveCharacterPoseClips();
   poseReferenceState.lastAppliedClip = null;
   syncAnimatorControls();
+  setPoseEditorNotice(`Cleared ${removedCount} ${key} frame${removedCount === 1 ? "" : "s"}.`);
+  return true;
 }
 
 function resetCurrentCharacterPoseReference() {
@@ -3514,8 +3622,15 @@ function downloadCharacterPoseReferences() {
   const link = document.createElement("a");
   link.href = url;
   link.download = "character_pose_references.json";
+  link.style.display = "none";
+  document.body.appendChild(link);
   link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    link.remove();
+  }, 0);
+  setPoseEditorNotice("Downloaded character_pose_references.json.", 4.5);
+  return true;
 }
 
 function pickPoseHandle(event) {
@@ -3573,16 +3688,16 @@ function rotateSelectedPoseJoint(direction) {
   if (!state.animatorMode || !state.paused || !glbCharacter.loaded) return;
   const handle = state.selectedPoseHandle;
   if (!handle) return;
-  const driverPivot = glbCharacter.pivots[handle.driverKey];
-  if (!driverPivot) return;
+  const selectedPivot = glbCharacter.pivots[handle.key];
+  if (!selectedPivot) return;
   pushPoseUndoState();
-  const currentDriverAngle = state.manualPoseAngles[handle.driverKey]
-    ?? glbCharacter.currentAngles.get(driverPivot)
+  const currentSelectedAngle = state.manualPoseAngles[handle.key]
+    ?? glbCharacter.currentAngles.get(selectedPivot)
     ?? 0;
   const step = THREE.MathUtils.degToRad(5) * Math.sign(direction || 1);
-  state.manualPoseAngles[handle.driverKey] = clampPoseAngle(
-    handle.driverKey,
-    currentDriverAngle + step,
+  state.manualPoseAngles[handle.key] = clampPoseAngle(
+    handle.key,
+    currentSelectedAngle + step,
   );
   applyGlbPoseAngles(state.manualPoseAngles, true);
   updatePoseHandles();
@@ -5388,12 +5503,109 @@ const startValveMaterial = new THREE.MeshBasicMaterial({
   transparent: true,
   opacity: 0.72,
 });
-const startSteamMaterial = new THREE.MeshBasicMaterial({
-  color: 0xbdd1c8,
-  transparent: true,
-  opacity: 0.18,
-  depthWrite: false,
-});
+const proceduralSmokeGeometry = new THREE.PlaneGeometry(1, 1, 8, 14);
+
+function createProceduralSmokeMaterial({
+  color = 0x8f9a93,
+  opacity = 0.5,
+  contrast = 1.0,
+  speed = 1.0,
+} = {}) {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    blending: THREE.NormalBlending,
+    uniforms: {
+      uTime: { value: 0 },
+      uSeed: { value: 0 },
+      uOpacity: { value: opacity },
+      uContrast: { value: contrast },
+      uSpeed: { value: speed },
+      uColor: { value: new THREE.Color(color) },
+    },
+    vertexShader: `
+      uniform float uTime;
+      uniform float uSeed;
+      uniform float uSpeed;
+      varying vec2 vUv;
+      varying float vColumn;
+
+      void main() {
+        vUv = uv;
+        vec3 transformed = position;
+        float lift = uv.y;
+        float twist = sin(lift * 8.0 + uTime * 0.72 * uSpeed + uSeed * 9.7) * lift * 0.18;
+        float curl = sin(lift * 15.0 - uTime * 0.44 * uSpeed + uSeed * 13.1) * lift * 0.08;
+        transformed.x += twist + curl;
+        transformed.y += sin(uv.x * 6.283 + uSeed * 4.0 + uTime * 0.18) * lift * 0.025;
+        vColumn = transformed.x;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uSeed;
+      uniform float uOpacity;
+      uniform float uContrast;
+      uniform float uSpeed;
+      uniform vec3 uColor;
+      varying vec2 vUv;
+      varying float vColumn;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+
+      float valueNoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        float a = hash(i + vec2(0.0, 0.0));
+        float b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0));
+        float d = hash(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+      }
+
+      void main() {
+        vec2 pixelUv = floor(vUv * vec2(22.0, 42.0)) / vec2(22.0, 42.0);
+        float rise = uTime * 0.34 * uSpeed + uSeed * 3.73;
+        float cloudy = valueNoise(pixelUv * vec2(5.0, 7.0) + vec2(uSeed * 19.0, rise));
+        cloudy += valueNoise(pixelUv * vec2(12.0, 18.0) + vec2(rise * 0.45, uSeed * 8.0)) * 0.55;
+        cloudy = cloudy / 1.55;
+
+        float horizontalFade = 1.0 - smoothstep(0.2, 0.56, abs(vUv.x - 0.5));
+        float bottomFade = smoothstep(0.03, 0.25, vUv.y);
+        float topFade = 1.0 - smoothstep(0.72, 1.0, vUv.y);
+        float edgeFade = horizontalFade * bottomFade * topFade;
+        float broken = smoothstep(0.34, 0.78, cloudy * uContrast + edgeFade * 0.22);
+        float alpha = broken * edgeFade * uOpacity;
+
+        if (alpha < 0.01) discard;
+        float shade = 0.72 + cloudy * 0.36 + sin((vColumn + vUv.y + uSeed) * 18.0) * 0.04;
+        gl_FragColor = vec4(uColor * shade, alpha);
+      }
+    `,
+  });
+}
+
+function createProceduralSmokeMesh(options = {}) {
+  const smoke = new THREE.Mesh(proceduralSmokeGeometry, createProceduralSmokeMaterial(options));
+  smoke.renderOrder = options.renderOrder ?? 3;
+  smoke.visible = options.visible ?? true;
+  smoke.userData.smokeSeed = options.seed ?? Math.random();
+  smoke.material.uniforms.uSeed.value = smoke.userData.smokeSeed;
+  return smoke;
+}
+
+function updateProceduralSmokeMesh(smoke, now, opacity = 0.5, speed = 1, contrast = 1) {
+  if (!smoke?.material?.uniforms) return;
+  smoke.material.uniforms.uTime.value = now;
+  smoke.material.uniforms.uOpacity.value = opacity;
+  smoke.material.uniforms.uSpeed.value = speed;
+  smoke.material.uniforms.uContrast.value = contrast;
+}
 const finishBuildingMaterial = new THREE.MeshBasicMaterial({
   color: 0x07101c,
   transparent: true,
@@ -5579,6 +5791,18 @@ function createDroneVisual() {
   rightGlow.scale.setScalar(0.72);
   group.add(leftGlow, rightGlow);
 
+  const tailSmoke = createProceduralSmokeMesh({
+    color: 0x7f8b82,
+    opacity: 0,
+    contrast: 1.18,
+    speed: 1.2,
+    visible: false,
+  });
+  tailSmoke.position.set(-0.58, -0.22, 0.08);
+  tailSmoke.scale.set(0.8, 1.05, 1);
+  tailSmoke.rotation.z = -0.4;
+  group.add(tailSmoke);
+
   group.renderOrder = 15;
   return {
     group,
@@ -5586,6 +5810,7 @@ function createDroneVisual() {
     lightGlows: [leftGlow, rightGlow],
     rotors: rotorGroups,
     blownRotor: null,
+    smokes: [tailSmoke],
     grapplePoint,
   };
 }
@@ -5604,7 +5829,6 @@ function createPoliceHoverCarVisual() {
   const cyanMaterial = new THREE.MeshBasicMaterial({ color: 0x36f6ff, transparent: true, opacity: 1, depthWrite: false });
   const flameMaterial = new THREE.MeshBasicMaterial({ color: 0xff9a1f, transparent: true, opacity: 1, depthWrite: false });
   const hotFlameMaterial = new THREE.MeshBasicMaterial({ color: 0xffff55, transparent: true, opacity: 1, depthWrite: false });
-  const smokeMaterial = new THREE.MeshBasicMaterial({ color: 0x9aa0a2, transparent: true, opacity: 0, depthWrite: false });
 
   const roof = new THREE.Mesh(new THREE.BoxGeometry(1.22, 0.18, 0.12), whiteMaterial);
   const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.22, 0.12), cabMaterial);
@@ -5623,8 +5847,8 @@ function createPoliceHoverCarVisual() {
   const rightFlame = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.42, 4), flameMaterial.clone());
   const leftHot = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.26, 4), hotFlameMaterial.clone());
   const rightHot = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.26, 4), hotFlameMaterial.clone());
-  const leftSmoke = new THREE.Mesh(new THREE.CircleGeometry(0.12, 8), smokeMaterial.clone());
-  const rightSmoke = new THREE.Mesh(new THREE.CircleGeometry(0.12, 8), smokeMaterial.clone());
+  const leftSmoke = createProceduralSmokeMesh({ color: 0x7f8b82, opacity: 0, contrast: 1.18, speed: 1.25, visible: false });
+  const rightSmoke = createProceduralSmokeMesh({ color: 0x7f8b82, opacity: 0, contrast: 1.18, speed: 1.25, visible: false });
 
   roof.position.set(0, 0.34, 0.02);
   windshield.position.set(0, 0.16, 0.08);
@@ -5645,6 +5869,8 @@ function createPoliceHoverCarVisual() {
   rightHot.position.set(0.56, -0.8, 0.1);
   leftSmoke.position.set(-0.56, -0.76, 0.11);
   rightSmoke.position.set(0.56, -0.76, 0.11);
+  leftSmoke.scale.set(0.9, 1.15, 1);
+  rightSmoke.scale.set(0.9, 1.15, 1);
   for (const flame of [leftFlame, rightFlame, leftHot, rightHot]) flame.rotation.z = Math.PI;
   group.add(
     roof,
@@ -6117,10 +6343,15 @@ function addStartBlock(x = -2.25, y = 6.35) {
   addGameplay(ledge);
 
   const smokePuffs = [];
-  const smokeGeometry = new THREE.CircleGeometry(0.32, 8);
   for (let index = 0; index < 24; index += 1) {
-    const material = startSteamMaterial.clone();
-    const puff = new THREE.Mesh(smokeGeometry, material);
+    const puff = createProceduralSmokeMesh({
+      color: 0x9aa59f,
+      opacity: 0.2,
+      contrast: 1.12,
+      speed: 0.72,
+      seed: index / 24,
+      renderOrder: 3,
+    });
     puff.renderOrder = 3;
     pipeGroup.add(puff);
     smokePuffs.push({
@@ -6157,9 +6388,15 @@ function updateStartSteam(dt, now) {
       Math.round(y * snap) / snap,
       vent.z + progress * 0.02,
     );
-    puff.mesh.scale.set(scale * (1.0 + puff.size), scale * 0.82, 1);
+    puff.mesh.scale.set(scale * (1.05 + puff.size), scale * (1.45 + puff.size * 1.2), 1);
     puff.mesh.rotation.z = puff.seed * Math.PI * 2 + progress * 0.3;
-    puff.mesh.material.opacity = Math.pow(1 - progress, 1.65) * 0.24;
+    updateProceduralSmokeMesh(
+      puff.mesh,
+      now + puff.seed * 9.0,
+      Math.pow(1 - progress, 1.45) * 0.3,
+      0.58 + puff.size * 1.8,
+      1.0 + progress * 0.34,
+    );
   }
 }
 
@@ -6557,12 +6794,13 @@ function stopEditorDrag(event) {
 }
 
 function startAnimatorOrbitDrag(event) {
-  if (!state.paused || !state.animatorMode || !(event.altKey || event.button === 1)) return false;
+  if (!state.paused || !state.animatorMode || !(event.altKey || event.button === 1 || event.button === 2)) return false;
   event.preventDefault();
   canvas.setPointerCapture(event.pointerId);
   state.orbitingAnimatorCamera = true;
   state.orbitStartPointer.set(event.clientX, event.clientY);
   state.orbitStartAngles.set(editorUi.poseViewYaw, editorUi.poseViewPitch);
+  state.orbitStartDistance = getAnimatorCameraDistance();
   return true;
 }
 
@@ -6573,7 +6811,7 @@ function dragAnimatorOrbitCamera(event) {
   const dy = event.clientY - state.orbitStartPointer.y;
   editorUi.poseViewYaw = state.orbitStartAngles.x - dx * config.animatorOrbitDragSpeed;
   editorUi.poseViewPitch = state.orbitStartAngles.y - dy * config.animatorOrbitDragSpeed;
-  applyAnimatorOrbitCamera();
+  applyAnimatorOrbitCamera(state.orbitStartDistance);
   syncEditorPane();
   return true;
 }
@@ -6896,9 +7134,13 @@ function reset({ resetLevelStats = false } = {}) {
       thruster.hot.scale.set(1, 1, 1);
       if (thruster.smoke) {
         thruster.smoke.visible = false;
-        thruster.smoke.material.opacity = 0;
-        thruster.smoke.scale.setScalar(1);
+        thruster.smoke.scale.set(0.9, 1.15, 1);
+        updateProceduralSmokeMesh(thruster.smoke, 0, 0, 1, 1);
       }
+    }
+    for (const smoke of anchor.smokes) {
+      smoke.visible = false;
+      updateProceduralSmokeMesh(smoke, 0, 0, 1, 1);
     }
     anchor.mesh.position.copy(anchor.position);
     anchor.mesh.rotation.set(0, 0, 0);
@@ -8089,9 +8331,9 @@ function updatePoliceCarEffects(anchor, now) {
         thruster.hot.scale.set(0.8 + burst * 0.5, 0.7 + burst * 0.5, 1);
         if (thruster.smoke) {
           thruster.smoke.visible = true;
-          thruster.smoke.material.opacity = 0.28 + burst * 0.22;
           thruster.smoke.position.y = -0.72 + Math.sin(now * 9 + anchor.visualSeed) * 0.06;
-          thruster.smoke.scale.setScalar(1.0 + burst * 0.85);
+          thruster.smoke.scale.set(0.82 + burst * 0.48, 1.18 + burst * 0.95, 1);
+          updateProceduralSmokeMesh(thruster.smoke, now + anchor.visualSeed, 0.18 + burst * 0.36, 1.35 + burst * 0.8, 1.35);
         }
       } else {
         thruster.body.visible = true;
@@ -8107,7 +8349,7 @@ function updatePoliceCarEffects(anchor, now) {
         thruster.hot.material.opacity = 0.72;
         if (thruster.smoke) {
           thruster.smoke.visible = false;
-          thruster.smoke.material.opacity = 0;
+          updateProceduralSmokeMesh(thruster.smoke, now + anchor.visualSeed, 0, 1, 1);
         }
       }
     }
@@ -8131,9 +8373,9 @@ function updatePoliceCarEffects(anchor, now) {
   for (const [index, smoke] of anchor.smokes.entries()) {
     const progress = THREE.MathUtils.clamp((anchor.sputterUntil - now) / 0.5, 0, 1);
     smoke.visible = sputtering || progress > 0;
-    smoke.material.opacity = progress * 0.58;
     smoke.position.y = -0.76 + (1 - progress) * 0.28 + Math.sin(now * 7 + index + anchor.visualSeed) * 0.025;
-    smoke.scale.setScalar(0.75 + (1 - progress) * 0.85);
+    smoke.scale.set(0.62 + (1 - progress) * 0.42, 0.92 + (1 - progress) * 0.8, 1);
+    updateProceduralSmokeMesh(smoke, now + anchor.visualSeed + index * 0.41, progress * 0.44, 1.15, 1.18);
   }
 }
 

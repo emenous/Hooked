@@ -292,6 +292,7 @@ strong {
   accent-color: #9fe7ff;
   cursor: ns-resize;
   writing-mode: vertical-lr;
+  transform: rotate(180deg);
 }
 
 #editor {
@@ -353,7 +354,95 @@ strong {
   font-family: inherit;
 }
 
+#editor-pane .tp-rotv_b,
+#editor-pane .tp-fldv_b {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  border: 1px solid rgba(159, 231, 255, 0.22);
+  border-radius: 7px;
+  background:
+    linear-gradient(180deg, rgba(35, 231, 255, 0.12), rgba(244, 255, 249, 0.045)),
+    rgba(5, 12, 12, 0.84);
+  color: #f7fff8;
+  cursor: pointer;
+}
+
+#editor-pane .tp-rotv_b::before,
+#editor-pane .tp-fldv_b::before {
+  content: "▸";
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  place-items: center;
+  border-radius: 4px;
+  background: rgba(159, 231, 255, 0.12);
+  color: #9fe7ff;
+  font-size: 12px;
+  line-height: 1;
+}
+
+#editor-pane .tp-rotv-expanded > .tp-rotv_b::before,
+#editor-pane .tp-fldv-expanded > .tp-fldv_b::before {
+  content: "▾";
+  color: #e4f24b;
+}
+
+#editor-pane .tp-fldv {
+  margin-top: 8px;
+}
+
+#editor-pane .tp-fldv_c {
+  padding-top: 6px;
+}
+
 #editor.has-tweakpane #build-tools {
+  display: contents;
+}
+
+#editor.has-tweakpane #build-tools > :not(#character-tools) {
+  display: none;
+}
+
+#editor.has-tweakpane #character-tools {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  padding: 8px;
+  border-color: rgba(159, 231, 255, 0.22);
+  background: rgba(7, 18, 22, 0.58);
+}
+
+#editor.has-tweakpane #character-tools legend {
+  color: #9fe7ff;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+#editor.has-tweakpane #character-tools button {
+  min-height: 30px;
+  padding: 5px 7px;
+  font-size: 11px;
+}
+
+#pose-editor-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(159, 231, 255, 0.22);
+  border-radius: 7px;
+  background: rgba(7, 18, 22, 0.8);
+  color: #cdded7;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+#pose-editor-hint.hidden {
   display: none;
 }
 
