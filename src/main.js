@@ -1,9 +1,10 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-103";
+import { createCharacterController } from "./characterController.js?v=version-0-5-104";
 
-const GAME_VERSION = "v0.5.103";
-const GAMEPLAY_KEY_CODES = new Set(["Space", "KeyC", "KeyV", "KeyR", "KeyI", "KeyP", "KeyB", "KeyG"]);
+const GAME_VERSION = "v0.5.104";
+const handledKeyDownEvents = new WeakSet();
+const handledKeyUpEvents = new WeakSet();
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
@@ -9417,9 +9418,23 @@ function isEditableKeyTarget(target) {
   );
 }
 
+function getGameplayKeyAction(event) {
+  const code = event.code;
+  const key = String(event.key ?? "").toLowerCase();
+  if (code === "Space" || key === " " || key === "spacebar" || key === "space") return "grapple";
+  if (code === "KeyC" || code === "KeyV" || key === "c" || key === "v") return "flourish";
+  if (code === "KeyR" || key === "r") return "reset";
+  if (code === "KeyI" || key === "i") return "inspect";
+  if (code === "KeyP" || key === "p") return "pause";
+  if (code === "KeyB" || key === "b") return "build";
+  if (code === "KeyG" || key === "g") return "debugNeutral";
+  return null;
+}
+
 function handleGameKeyDown(event) {
+  if (handledKeyDownEvents.has(event)) return;
+  handledKeyDownEvents.add(event);
   if (isEditableKeyTarget(event.target)) return;
-  if (event.code === "Space") event.preventDefault();
   if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") {
     if (state.animatorMode && state.paused) {
       event.preventDefault();
@@ -9427,29 +9442,26 @@ function handleGameKeyDown(event) {
     }
     return;
   }
+
+  const action = getGameplayKeyAction(event);
+  if (!action) return;
+  event.preventDefault();
   if (event.repeat) return;
 
-  if (!GAMEPLAY_KEY_CODES.has(event.code)) return;
-
   sfx.unlock();
-  if (event.code === "Space") state.keys.add(event.code);
+  if (action === "grapple") state.keys.add("Space");
 
-  if (event.code === "Space") {
-    event.preventDefault();
+  if (action === "grapple") {
     state.spaceDownAt = performance.now() / 1000;
     state.spaceIsDown = true;
     state.spaceHadAnchor = false;
     jumpFromPlatform();
   }
-  if (event.code === "KeyC" || event.code === "KeyV") queueFlourish(performance.now() / 1000);
-  if (event.code === "KeyR") reset();
-  if (event.code === "KeyI") setInspectFrozen(!state.inspectFrozen, performance.now() / 1000);
-  if (event.code === "KeyP") setPaused(!state.paused);
-  if (event.code === "KeyB") {
-    event.preventDefault();
-    setPaused(!state.paused);
-  }
-  if (event.code === "KeyG") {
+  if (action === "flourish") queueFlourish(performance.now() / 1000);
+  if (action === "reset") reset();
+  if (action === "inspect") setInspectFrozen(!state.inspectFrozen, performance.now() / 1000);
+  if (action === "pause" || action === "build") setPaused(!state.paused);
+  if (action === "debugNeutral") {
     config.debugGlbNeutralOnly = !config.debugGlbNeutralOnly;
     if (config.debugGlbNeutralOnly) resetGlbPivotAngles();
     syncCharacterSourceVisibility();
@@ -9457,13 +9469,18 @@ function handleGameKeyDown(event) {
 }
 
 function handleGameKeyUp(event) {
+  if (handledKeyUpEvents.has(event)) return;
+  handledKeyUpEvents.add(event);
   if (isEditableKeyTarget(event.target)) return;
-  state.keys.delete(event.code);
-  if (state.inspectFrozen && event.code === "Space") {
+  const action = getGameplayKeyAction(event);
+  if (!action) return;
+  if (action === "grapple") state.keys.delete("Space");
+  if (state.inspectFrozen && action === "grapple") {
     event.preventDefault();
     return;
   }
-  if (event.code === "Space") {
+  if (action === "grapple") {
+    event.preventDefault();
     const hadAnchor = state.spaceHadAnchor || state.grappled;
     releaseGrapple({ pop: hadAnchor });
     state.spaceDownAt = -100;
@@ -9472,8 +9489,16 @@ function handleGameKeyUp(event) {
   }
 }
 
+window.addEventListener("keydown", handleGameKeyDown, { capture: true });
+window.addEventListener("keyup", handleGameKeyUp, { capture: true });
 document.addEventListener("keydown", handleGameKeyDown, { capture: true });
 document.addEventListener("keyup", handleGameKeyUp, { capture: true });
+window.addEventListener("blur", () => {
+  state.keys.clear();
+  state.spaceDownAt = -100;
+  state.spaceIsDown = false;
+  state.spaceHadAnchor = false;
+});
 
 canvas.addEventListener("pointerdown", startPointerControl);
 canvas.addEventListener("pointermove", dragEditorObject);
