@@ -1,9 +1,9 @@
 {
-  "version": 1,
-  "updatedAt": "2026-06-23T00:00:00.000Z",
+  "version": 3,
+  "updatedAt": "2026-06-26T04:05:04.701Z",
   "model": "./assets/models/m_character_skeletal_textures_1k.glb",
   "poseMode": "ragdollLite",
-  "note": "Committed Sling pose references. Browser-local poses override project poses while authoring. Blend keeps these as guidance over the physics solver instead of hard-locking motion.",
+  "note": "Sling pose references updated for the standard Blender source orientation. Gameplay ragdollLite now owns live motion; knees flex on negative local Z.",
   "poses": {
     "idleHang": {
       "key": "idleHang",
@@ -24,10 +24,10 @@
         "rightElbow": 0.12,
         "rightWrist": 0.04,
         "leftHip": 0.035,
-        "leftKnee": 0.075,
+        "leftKnee": -0.075,
         "leftAnkle": -0.035,
         "rightHip": -0.025,
-        "rightKnee": 0.06,
+        "rightKnee": -0.06,
         "rightAnkle": 0.025
       }
     },
@@ -46,10 +46,10 @@
         "rightElbow": 0.32,
         "rightWrist": 0.12,
         "leftHip": 0.24,
-        "leftKnee": 0.32,
+        "leftKnee": -0.32,
         "leftAnkle": 0.06,
         "rightHip": 0.1,
-        "rightKnee": 0.24,
+        "rightKnee": -0.24,
         "rightAnkle": 0.02
       }
     },
@@ -71,10 +71,10 @@
         "rightElbow": 0.42,
         "rightWrist": 0.18,
         "leftHip": 0.2,
-        "leftKnee": 0.26,
+        "leftKnee": -0.26,
         "leftAnkle": 0.04,
         "rightHip": 0.06,
-        "rightKnee": 0.22,
+        "rightKnee": -0.22,
         "rightAnkle": -0.02
       }
     },
@@ -96,10 +96,10 @@
         "rightElbow": 0.46,
         "rightWrist": 0.16,
         "leftHip": 0.38,
-        "leftKnee": 0.42,
+        "leftKnee": -0.42,
         "leftAnkle": 0.08,
         "rightHip": 0.14,
-        "rightKnee": 0.3,
+        "rightKnee": -0.3,
         "rightAnkle": -0.02
       }
     },
@@ -121,11 +121,11 @@
         "rightElbow": 0.5,
         "rightWrist": 0.18,
         "leftHip": 0.5,
-        "leftKnee": 0.48,
+        "leftKnee": -0.48,
         "leftAnkle": 0.1,
         "rightHip": 0.2,
-        "rightKnee": 0.34,
-        "rightAnkle": 0.0
+        "rightKnee": -0.34,
+        "rightAnkle": 0
       }
     },
     "upSwing": {
@@ -146,10 +146,10 @@
         "rightElbow": 0.36,
         "rightWrist": 0.12,
         "leftHip": 0.28,
-        "leftKnee": 0.34,
+        "leftKnee": -0.34,
         "leftAnkle": 0.06,
         "rightHip": 0.04,
-        "rightKnee": 0.24,
+        "rightKnee": -0.24,
         "rightAnkle": -0.02
       }
     },
@@ -171,10 +171,10 @@
         "rightElbow": 0.34,
         "rightWrist": -0.08,
         "leftHip": 0.5,
-        "leftKnee": 0.68,
+        "leftKnee": -0.68,
         "leftAnkle": 0.13,
         "rightHip": 0.24,
-        "rightKnee": 0.5,
+        "rightKnee": -0.5,
         "rightAnkle": 0.04
       }
     },
@@ -196,10 +196,10 @@
         "rightElbow": 0.28,
         "rightWrist": 0.14,
         "leftHip": 0.32,
-        "leftKnee": 0.38,
+        "leftKnee": -0.38,
         "leftAnkle": 0.08,
         "rightHip": 0.06,
-        "rightKnee": 0.26,
+        "rightKnee": -0.26,
         "rightAnkle": -0.02
       }
     },
@@ -208,24 +208,24 @@
       "savedAt": "2026-06-23T00:00:00.000Z",
       "source": "project_baseline",
       "notes": "Compact tuck guide for normal flourish speed.",
-      "blend": 0.6,
+      "blend": 0.78,
       "angles": {
-        "pelvis": 0.18,
-        "waist": -0.08,
-        "chest": -0.22,
+        "pelvis": 0.24,
+        "waist": -0.16,
+        "chest": -0.34,
         "neck": 0.08,
-        "leftShoulder": 0.18,
-        "leftElbow": 0.9,
-        "leftWrist": 0.16,
-        "rightShoulder": -0.18,
-        "rightElbow": 0.9,
-        "rightWrist": -0.16,
-        "leftHip": 1.18,
-        "leftKnee": 1.22,
-        "leftAnkle": 0.34,
-        "rightHip": 1.08,
-        "rightKnee": 1.16,
-        "rightAnkle": 0.3
+        "leftShoulder": 0.34,
+        "leftElbow": 1.18,
+        "leftWrist": -0.08,
+        "rightShoulder": -0.34,
+        "rightElbow": 1.18,
+        "rightWrist": 0.08,
+        "leftHip": 1.32,
+        "leftKnee": -1.34,
+        "leftAnkle": -0.44,
+        "rightHip": 1.3,
+        "rightKnee": -1.34,
+        "rightAnkle": -0.44
       }
     },
     "airTwirl": {
@@ -246,10 +246,10 @@
         "rightElbow": 1.08,
         "rightWrist": 0.2,
         "leftHip": 1.1,
-        "leftKnee": 1.34,
+        "leftKnee": -1.34,
         "leftAnkle": 0.18,
         "rightHip": 0.9,
-        "rightKnee": 1.22,
+        "rightKnee": -1.22,
         "rightAnkle": 0.14
       }
     },
@@ -258,24 +258,24 @@
       "savedAt": "2026-06-23T00:00:00.000Z",
       "source": "project_baseline",
       "notes": "Tighter high-speed roll guide.",
-      "blend": 0.72,
+      "blend": 0.88,
       "angles": {
-        "pelvis": 0.22,
-        "waist": -0.1,
-        "chest": -0.24,
+        "pelvis": 0.3,
+        "waist": -0.18,
+        "chest": -0.38,
         "neck": 0.1,
-        "leftShoulder": 0.22,
-        "leftElbow": 1.02,
-        "leftWrist": 0.18,
-        "rightShoulder": -0.22,
-        "rightElbow": 1.02,
-        "rightWrist": -0.18,
-        "leftHip": 1.28,
-        "leftKnee": 1.3,
-        "leftAnkle": 0.38,
-        "rightHip": 1.2,
-        "rightKnee": 1.26,
-        "rightAnkle": 0.34
+        "leftShoulder": 0.42,
+        "leftElbow": 1.24,
+        "leftWrist": -0.1,
+        "rightShoulder": -0.42,
+        "rightElbow": 1.24,
+        "rightWrist": 0.1,
+        "leftHip": 1.32,
+        "leftKnee": -1.35,
+        "leftAnkle": -0.48,
+        "rightHip": 1.32,
+        "rightKnee": -1.35,
+        "rightAnkle": -0.48
       }
     }
   }

@@ -1,7 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
+import { createCharacterController } from "./characterController.js?v=version-0-5-102";
 
-const GAME_VERSION = "v0.5.88";
+const GAME_VERSION = "v0.5.102";
 const GAMEPLAY_KEY_CODES = new Set(["Space", "KeyV", "KeyR", "KeyI", "KeyP", "KeyB", "KeyG"]);
 
 const gameShell = document.querySelector("#game-shell");
@@ -278,10 +279,10 @@ const fxQualityProfiles = {
 const fxQualitySettings = {
   level: config.fxQuality,
 };
-const characterPoseStorageKey = "hooked.character.pose.references.v1";
-const characterPoseClipStorageKey = "hooked.character.pose.clips.v1";
+const characterPoseStorageKey = "hooked.character.pose.references.v3";
+const characterPoseClipStorageKey = "hooked.character.pose.clips.v3";
 const characterPoseProjectPath = "./data/character_pose_references.json";
-const characterPoseLibraryVersion = 1;
+const characterPoseLibraryVersion = 3;
 
 const levelSelectionStorageKey = "hooked.current.level.v1";
 let currentLevelId = localStorage.getItem(levelSelectionStorageKey) || "skyline";
@@ -2034,6 +2035,7 @@ const glbCharacter = {
   currentAngles: new Map(),
   debugMarkers: [],
 };
+let glbCharacterController = null;
 const glbCharacterBaseScale = 1.7;
 const glbPivotNames = {
   root: "M_root",
@@ -2065,28 +2067,21 @@ const glbPivotDriverAxes = {
   chest: "z",
   neck: "z",
   head: "z",
-  leftShoulder: "x",
-  leftElbow: "x",
+  leftShoulder: "z",
+  leftElbow: "z",
   leftWrist: "z",
-  rightShoulder: "x",
+  rightShoulder: "z",
   rightElbow: "z",
   rightWrist: "z",
-  leftHip: "x",
+  leftHip: "z",
   leftKnee: "z",
   leftAnkle: "z",
-  rightHip: "x",
+  rightHip: "z",
   rightKnee: "z",
   rightAnkle: "z",
 };
 
-const glbScreenPlanePivotKeys = new Set([
-  "leftElbow",
-  "rightElbow",
-  "leftWrist",
-  "rightWrist",
-  "leftAnkle",
-  "rightAnkle",
-]);
+const glbScreenPlanePivotKeys = new Set();
 
 const glbPivotChildKeys = {
   root: "pelvis",
@@ -2854,11 +2849,13 @@ var glbJointLimits = {
   loadElbow: [-1.65, 0.45],
   wrist: [-0.42, 0.42],
   hip: [-1.1, 1.32],
-  knee: [-0.02, 1.35],
+  // Current Blender source bends knees on local Z in the negative direction.
+  knee: [-1.35, 0.04],
   ankle: [-swingPoseTuning.footWindMaxClockwise, 0.04],
 };
 
 var glbJointLimitOverrides = {
+  leftKnee: [-0.04, 1.35],
   leftAnkle: glbJointLimits.ankle,
   rightAnkle: glbJointLimits.ankle,
 };
@@ -3122,35 +3119,35 @@ function getSwingPhaseLegPose({
     ? clampJoint(-swingFlow * 0.18 + ropeX * 0.07, -0.2, 0.2)
     : clampJoint(localVelocityX * 0.014 + fallAmount * 0.05 * localSpeedSign, -0.22, 0.22);
 
-  let leftHip = -0.08 + forwardTrail * 0.44 - preload * 0.3 - backswingTuck * 0.34 + split;
-  let rightHip = -0.16 + forwardTrail * 0.34 - preload * 0.42 - backswingTuck * 0.48 - split * 0.75;
-  let leftKnee = 0.06 + preload * 0.72 + backswingTuck * 0.82 + forwardTrail * 0.18;
-  let rightKnee = 0.05 + preload * 0.86 + backswingTuck * 0.98 + forwardTrail * 0.12;
+  let leftHip = -0.06 + forwardTrail * 0.34 - preload * 0.22 - backswingTuck * 0.42 + split;
+  let rightHip = -0.12 + forwardTrail * 0.26 - preload * 0.34 - backswingTuck * 0.54 - split * 0.75;
+  let leftKnee = 0.04 + preload * 0.58 + backswingTuck * 0.82 + forwardTrail * 0.12;
+  let rightKnee = -(0.04 + preload * 0.7 + backswingTuck * 0.94 + forwardTrail * 0.08);
 
   if (dangle > 0) {
     leftHip = THREE.MathUtils.lerp(leftHip, 0.02 + split * 0.35, dangle);
     rightHip = THREE.MathUtils.lerp(rightHip, -0.03 - split * 0.3, dangle);
     leftKnee = THREE.MathUtils.lerp(leftKnee, 0.08, dangle);
-    rightKnee = THREE.MathUtils.lerp(rightKnee, 0.07, dangle);
+    rightKnee = THREE.MathUtils.lerp(rightKnee, -0.07, dangle);
   }
 
   if (!hooked && airborne) {
-    leftHip += fallAmount * 0.12 - riseAmount * 0.08;
-    rightHip += fallAmount * 0.06 - riseAmount * 0.12;
-    leftKnee += fallAmount * 0.16;
-    rightKnee += fallAmount * 0.12;
+    leftHip += fallAmount * 0.02 - riseAmount * 0.08;
+    rightHip += fallAmount * 0.1 - riseAmount * 0.12;
+    leftKnee += fallAmount * 0.18;
+    rightKnee -= fallAmount * 0.12;
   }
 
   let leftAnkle = -0.02;
   let rightAnkle = 0.02;
   if (tuck > 0) {
     const compact = THREE.MathUtils.smootherstep(tuck, 0, 1);
-    leftHip = THREE.MathUtils.lerp(leftHip, 1.3, compact);
-    rightHip = THREE.MathUtils.lerp(rightHip, 1.24, compact);
-    leftKnee = THREE.MathUtils.lerp(leftKnee, 1.34, compact);
-    rightKnee = THREE.MathUtils.lerp(rightKnee, 1.32, compact);
-    leftAnkle = THREE.MathUtils.lerp(leftAnkle, 0.04, compact);
-    rightAnkle = THREE.MathUtils.lerp(rightAnkle, 0.04, compact);
+    leftHip = THREE.MathUtils.lerp(leftHip, 1.08, compact);
+    rightHip = THREE.MathUtils.lerp(rightHip, 1.02, compact);
+    leftKnee = THREE.MathUtils.lerp(leftKnee, 1.28, compact);
+    rightKnee = THREE.MathUtils.lerp(rightKnee, -1.28, compact);
+    leftAnkle = THREE.MathUtils.lerp(leftAnkle, -0.44, compact);
+    rightAnkle = THREE.MathUtils.lerp(rightAnkle, -0.44, compact);
   }
 
   const windFootClockwise = getWindDrivenFootClockwise(tuck);
@@ -3784,26 +3781,9 @@ function setGlbAlignedTwoBonePose({
 function setLoadedLeftArmPose({
   pivots,
   ropeAngle,
-  ropeY,
-  leftArmLength,
   chestWorld,
 }) {
   const aimAngle = ropeAngle + getLoadedLeftArmAimOffset();
-  if (ropeY >= swingPoseTuning.loadedLeftArmBendMinRopeY) {
-    return setGlbTwoBonePose({
-      rootPivot: pivots.leftShoulder,
-      midPivot: pivots.leftElbow,
-      endPivot: pivots.leftWrist,
-      upperName: "leftShoulder",
-      lowerName: "leftElbow",
-      targetX: Math.cos(aimAngle) * leftArmLength * swingPoseTuning.loadedLeftArmReach,
-      targetY: Math.sin(aimAngle) * leftArmLength * swingPoseTuning.loadedLeftArmReach,
-      parentWorldAngle: chestWorld,
-      bendSign: swingPoseTuning.loadedLeftArmBendSign,
-      upperLimit: glbJointLimits.loadShoulder,
-      lowerLimit: glbJointLimits.loadElbow,
-    });
-  }
   return setGlbAlignedTwoBonePose({
     rootPivot: pivots.leftShoulder,
     midPivot: pivots.leftElbow,
@@ -4002,8 +3982,6 @@ function setGlbRelativePose(now) {
     ? setLoadedLeftArmPose({
       pivots,
       ropeAngle,
-      ropeY,
-      leftArmLength,
       chestWorld,
     })
     : setGlbTwoBonePose({
@@ -4052,158 +4030,30 @@ function setGlbRelativePose(now) {
   setGlbPivotAngle(pivots.rightWrist, clampAngle(-rightArm.lowerWorld * 0.08, glbJointLimits.wrist));
 }
 
+function getGlbCharacterController() {
+  if (!glbCharacterController) {
+    glbCharacterController = createCharacterController({
+      state,
+      config,
+      glbCharacter,
+      playerMesh,
+      playerAssetRoot,
+      limits: glbJointLimits,
+      setPivotAngle: setGlbPivotAngle,
+      clampPoseAngle,
+      clampAngle,
+      getVisualGrapplePoint,
+      getFlourishTuck,
+      getRestScreenAngle: getGlbRestScreenAngle,
+      getLoadedLeftArmAimOffset,
+      updateFreeArmSwingMemory,
+    });
+  }
+  return glbCharacterController;
+}
+
 function setGlbRagdollLitePose(now, dt = config.physicsStep) {
-  const pivots = glbCharacter.pivots;
-  const idleBreath = !state.hasLaunched || state.grounded ? Math.sin(now * 3.2) : 0;
-  const speed = Math.hypot(state.velocity.x, state.velocity.y);
-  const localVelocityX = state.velocity.x * state.facing;
-  const localVelocityY = state.velocity.y;
-  const airborne = state.hasLaunched && !state.grounded && !state.gameOver && !state.finished;
-  const hooked = state.hookActive && (state.anchor || state.hookEnd);
-  const grappling = state.grappled && state.anchor;
-  const fallAmount = THREE.MathUtils.clamp(-localVelocityY / 18, 0, 1);
-  const riseAmount = THREE.MathUtils.clamp(localVelocityY / 18, 0, 1);
-  const speedAmount = THREE.MathUtils.clamp(speed / 28, 0, 1);
-  const tuck = getFlourishTuck();
-  const rollTuck = state.flourishSpinRemaining > 0 ? THREE.MathUtils.smootherstep(tuck, 0, 1) : 0;
-
-  if (!airborne && !hooked) {
-    updateFreeArmSwingMemory(0, dt);
-    setGlbIdlePose(pivots, idleBreath, 0, idleBreath * 0.012, idleBreath * 0.018);
-    return;
-  }
-
-  const ropeTarget = hooked
-    ? (grappling ? getVisualGrapplePoint(state.anchor, scratchRopeEnd) : state.hookEnd)
-    : null;
-  let ropeDirectionWorld = ropeTarget
-    ? scratchVelocityDirection.subVectors(ropeTarget, state.player).normalize()
-    : scratchVelocityDirection.set(localVelocityX || 0.2, localVelocityY || -1, 0).normalize();
-  const shoulderWorld = characterScratchA;
-  if (hooked && ropeTarget && pivots.leftShoulder) {
-    playerMesh.updateWorldMatrix(true, true);
-    pivots.leftShoulder.getWorldPosition(shoulderWorld);
-    ropeDirectionWorld = scratchVelocityDirection.subVectors(ropeTarget, shoulderWorld);
-    if (ropeDirectionWorld.lengthSq() > 0.0001) {
-      ropeDirectionWorld.normalize();
-    } else {
-      ropeDirectionWorld.set(0.2 * state.facing, 0.98, 0).normalize();
-    }
-  }
-
-  let ropeDirectionLocal = characterScratchB.copy(ropeDirectionWorld);
-  if (hooked && ropeTarget && pivots.leftShoulder && playerAssetRoot) {
-    const localTarget = characterScratchB.copy(ropeTarget);
-    const localShoulder = characterScratchC.copy(shoulderWorld);
-    playerAssetRoot.worldToLocal(localTarget);
-    playerAssetRoot.worldToLocal(localShoulder);
-    ropeDirectionLocal = localTarget.sub(localShoulder);
-    if (ropeDirectionLocal.lengthSq() > 0.0001) {
-      ropeDirectionLocal.normalize();
-    } else {
-      ropeDirectionLocal.set(0.2, 0.98, 0).normalize();
-    }
-  } else {
-    ropeDirectionLocal.set(ropeDirectionWorld.x * state.facing, ropeDirectionWorld.y, 0).normalize();
-  }
-
-  const ropeX = ropeDirectionLocal.x;
-  const ropeY = ropeDirectionLocal.y;
-  const worldTangentX = -ropeDirectionWorld.y;
-  const worldTangentY = ropeDirectionWorld.x;
-  const tangentSpeed = state.velocity.x * worldTangentX + state.velocity.y * worldTangentY;
-  const swingFlow = hooked
-    ? clampJoint(tangentSpeed / 20, -1, 1)
-    : clampJoint(localVelocityX / 22, -1, 1);
-  const gravitySag = clampJoint(fallAmount * 0.36 - riseAmount * 0.18, -0.24, 0.46);
-  const motionLean = clampJoint(-swingFlow * 0.3 + localVelocityX * 0.006, -0.46, 0.46);
-  const tensionLean = hooked ? clampJoint(-ropeX * 0.2 + ropeY * 0.12, -0.28, 0.28) : 0;
-  const basePelvisWorld = motionLean * 0.28 + gravitySag * 0.14;
-  const baseWaistWorld = motionLean * 0.42 + gravitySag * 0.22 + tensionLean * 0.62;
-  const baseChestWorld = motionLean * 0.86 + gravitySag * 0.42 + tensionLean * 1.35;
-  const pelvisWorld = clampAngle(THREE.MathUtils.lerp(basePelvisWorld, 0.24, rollTuck), glbJointLimits.torso);
-  const waistWorld = clampAngle(THREE.MathUtils.lerp(baseWaistWorld, -0.1, rollTuck), glbJointLimits.torso);
-  const chestWorld = clampAngle(THREE.MathUtils.lerp(baseChestWorld, -0.24, rollTuck), glbJointLimits.torso);
-
-  setGlbPivotAngle(pivots.root, 0);
-  setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
-  setGlbPivotAngle(pivots.waist, clampAngle(waistWorld - pelvisWorld, glbJointLimits.torso));
-  setGlbPivotAngle(pivots.chest, clampAngle(chestWorld - waistWorld, glbJointLimits.torso));
-  setGlbPivotAngle(pivots.neck, clampAngle(-chestWorld * 0.22 + gravitySag * 0.08, glbJointLimits.neck));
-  setGlbPivotAngle(pivots.head, clampAngle(-chestWorld * 0.28 + idleBreath * 0.01, glbJointLimits.neck));
-
-  const leftArmLength = localLengthTo(pivots.leftElbow) + localLengthTo(pivots.leftWrist);
-  const rightArmLength = localLengthTo(pivots.rightElbow) + localLengthTo(pivots.rightWrist);
-  let leftArm = { upperWorld: -Math.PI / 2, lowerWorld: -Math.PI / 2 };
-  if (hooked) {
-    const ropeAngle = Math.atan2(ropeY, ropeX);
-    leftArm = setLoadedLeftArmPose({
-      pivots,
-      ropeAngle,
-      ropeY,
-      leftArmLength,
-      chestWorld,
-    });
-    setGlbPivotAngle(pivots.leftWrist, clampAngle(ropeAngle - leftArm.lowerWorld, glbJointLimits.wrist), true);
-  } else {
-    leftArm = setGlbTwoBonePose({
-      rootPivot: pivots.leftShoulder,
-      midPivot: pivots.leftElbow,
-      endPivot: pivots.leftWrist,
-      upperName: "leftShoulder",
-      lowerName: "leftElbow",
-      targetX: clampJoint(THREE.MathUtils.lerp(0.08 + swingFlow * 0.16, 0.04, rollTuck), -0.28, 0.34),
-      targetY: -leftArmLength * THREE.MathUtils.lerp(0.68 + fallAmount * 0.1, 0.13, rollTuck),
-      parentWorldAngle: chestWorld,
-      bendSign: 1,
-      upperLimit: glbJointLimits.shoulder,
-      lowerLimit: glbJointLimits.elbow,
-    });
-    setGlbPivotAngle(pivots.leftWrist, clampAngle(-leftArm.lowerWorld * 0.06, glbJointLimits.wrist));
-  }
-
-  const rightHandTarget = getFreeArmSwingTarget({
-    rightArmLength,
-    swingFlow: updateFreeArmSwingMemory(swingFlow, dt),
-    ropeX,
-    fallAmount,
-    riseAmount,
-    tuck: rollTuck,
-  });
-  const rightArm = setGlbTwoBonePose({
-    rootPivot: pivots.rightShoulder,
-    midPivot: pivots.rightElbow,
-    endPivot: pivots.rightWrist,
-    upperName: "rightShoulder",
-    lowerName: "rightElbow",
-    targetX: rightHandTarget.x,
-    targetY: rightHandTarget.y,
-    parentWorldAngle: chestWorld,
-    bendSign: rightHandTarget.bend,
-    upperLimit: glbJointLimits.shoulder,
-    lowerLimit: glbJointLimits.elbow,
-  });
-  setGlbPivotAngle(pivots.rightWrist, clampAngle(-rightArm.lowerWorld * 0.08, glbJointLimits.wrist));
-
-  const legPose = getSwingPhaseLegPose({
-    hooked,
-    airborne,
-    swingFlow,
-    ropeX,
-    ropeY,
-    fallAmount,
-    riseAmount,
-    speedAmount,
-    localVelocityX,
-    tuck,
-  });
-
-  setGlbPivotAngle(pivots.leftHip, legPose.leftHip);
-  setGlbPivotAngle(pivots.rightHip, legPose.rightHip);
-  setGlbPivotAngle(pivots.leftKnee, legPose.leftKnee);
-  setGlbPivotAngle(pivots.rightKnee, legPose.rightKnee);
-  setGlbPivotAngle(pivots.leftAnkle, legPose.leftAnkle);
-  setGlbPivotAngle(pivots.rightAnkle, legPose.rightAnkle);
+  getGlbCharacterController().apply(now, dt);
 }
 
 function lineAngle(line, startIndex = 0, endIndex = 1) {
@@ -4240,12 +4090,8 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
       : config.glbPoseSmoothing * 0.9;
     glbPoseSmoothingAlpha = 1 - Math.exp(-Math.max(dt, 0.001) * smoothingRate);
     setGlbRagdollLitePose(now, dt);
-    applyAuthoredPoseReference({
-      preserveRopeArm: state.hookActive || state.grappled,
-    });
-    applyPoseClipFrame({
-      preserveRopeArm: state.hookActive || state.grappled,
-    });
+    poseReferenceState.lastApplied = null;
+    poseReferenceState.lastAppliedClip = null;
     glbPoseSmoothingAlpha = 1;
     return;
   }
@@ -7363,7 +7209,10 @@ function isTwirlFlourish() {
 
 function getFlourishTuck() {
   if (state.flourishSpinRemaining <= 0) return 0;
-  const tuck = Math.sin(getFlourishProgress() * Math.PI);
+  const progress = getFlourishProgress();
+  const tuckIn = THREE.MathUtils.smootherstep(progress, 0.08, 0.34);
+  const tuckOut = 1 - THREE.MathUtils.smootherstep(progress, 0.66, 0.94);
+  const tuck = Math.min(tuckIn, tuckOut);
   return isTwirlFlourish() ? tuck * 0.32 : tuck;
 }
 
@@ -7576,8 +7425,9 @@ function findHookHit() {
   let bestDistance = Infinity;
 
   if (isAnchorTargetable(state.anchor) && isDownwardAnchorTargetAllowed(state.anchor)) {
-    const targetDistance = state.hookEnd.distanceTo(state.anchor.position);
-    const targetPathDistance = distanceFromSegmentToPoint(state.previousHookEnd, state.hookEnd, state.anchor.position);
+    const targetPoint = getVisualGrapplePoint(state.anchor, scratchRopeStart);
+    const targetDistance = state.hookEnd.distanceTo(targetPoint);
+    const targetPathDistance = distanceFromSegmentToPoint(state.previousHookEnd, state.hookEnd, targetPoint);
     if (Math.min(targetDistance, targetPathDistance) < config.hookHitRadius) return state.anchor;
   }
 
@@ -7585,10 +7435,11 @@ function findHookHit() {
     if (!isAnchorTargetable(anchor)) continue;
     if (!isDownwardAnchorTargetAllowed(anchor)) continue;
     const playerDistance = state.player.distanceTo(anchor.position);
-    if (playerDistance > config.maxRopeLength + 0.75) continue;
+    if (playerDistance > config.grappleRange + config.hookHitRadius) continue;
 
-    const hookDistance = state.hookEnd.distanceTo(anchor.position);
-    const hookPathDistance = distanceFromSegmentToPoint(state.previousHookEnd, state.hookEnd, anchor.position);
+    const targetPoint = getVisualGrapplePoint(anchor, scratchRopeStart);
+    const hookDistance = state.hookEnd.distanceTo(targetPoint);
+    const hookPathDistance = distanceFromSegmentToPoint(state.previousHookEnd, state.hookEnd, targetPoint);
     const hitDistance = Math.min(hookDistance, hookPathDistance);
     if (hitDistance < config.hookHitRadius && hitDistance < bestDistance) {
       best = anchor;
@@ -8021,8 +7872,14 @@ function updateGrapple(dt) {
   }
 
   if (!state.grappled) {
+    const shotMaxLength = state.anchor
+      ? Math.min(
+          config.grappleRange + config.hookHitRadius,
+          Math.max(config.maxRopeLength, state.player.distanceTo(state.anchor.position) + config.hookHitRadius),
+        )
+      : config.maxRopeLength;
     state.ropeLength = Math.min(
-      config.maxRopeLength,
+      shotMaxLength,
       state.ropeLength + config.hookShotSpeed * dt,
     );
   }
@@ -8035,7 +7892,7 @@ function updateGrapple(dt) {
       if (hookHit) attachAnchor(hookHit);
       if (
         !hookHit &&
-        state.ropeLength >= config.maxRopeLength - 0.04 &&
+        state.ropeLength >= (state.anchor ? state.player.distanceTo(state.anchor.position) : config.maxRopeLength) - 0.04 &&
         state.velocity.y <= config.failedGrappleFallSpeedThreshold &&
         !hasAvailableAnchorInReach()
       ) {

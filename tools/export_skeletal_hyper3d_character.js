@@ -53,6 +53,21 @@ BONE_PARENT = {
     "right_ankle_pivot": "right_knee_pivot",
 }
 
+LOCAL_Z_HINGE_BONES = {
+    "left_shoulder_pivot",
+    "left_elbow_pivot",
+    "left_wrist_pivot",
+    "right_shoulder_pivot",
+    "right_elbow_pivot",
+    "right_wrist_pivot",
+    "left_hip_pivot",
+    "left_knee_pivot",
+    "left_ankle_pivot",
+    "right_hip_pivot",
+    "right_knee_pivot",
+    "right_ankle_pivot",
+}
+
 TAIL_TARGET = {
     "M_root": "waist_pivot",
     "pelvis_pivot": "waist_pivot",
@@ -134,6 +149,11 @@ for bone_name, parent_name in BONE_PARENT.items():
     if parent_name:
         edit_bones[bone_name].parent = edit_bones[parent_name]
         edit_bones[bone_name].use_connect = False
+
+for bone_name in LOCAL_Z_HINGE_BONES:
+    # Runtime/gameplay expects limb bends to be authored on local Z.
+    # Align bone roll here so the GLB itself owns that contract.
+    edit_bones[bone_name].align_roll(Vector((0, 0, 1)))
 
 bpy.ops.object.mode_set(mode="OBJECT")
 arm_data.display_type = "STICK"

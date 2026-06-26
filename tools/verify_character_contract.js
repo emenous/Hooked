@@ -7,6 +7,7 @@ const defaultTarget = "assets/models/m_character_skeletal_textures_1k.glb";
 const targetArg = process.argv[2] ?? defaultTarget;
 const target = path.normalize(targetArg);
 const sourcePath = path.join(repoRoot, "src", "main.js");
+const characterControllerPath = path.join(repoRoot, "src", "characterController.js");
 const poseReferencePath = path.join(repoRoot, "data", "character_pose_references.json");
 const expectedProjectPoseKeys = [
   "idleHang",
@@ -112,7 +113,10 @@ function sidePosition(sidePositions, name) {
 }
 
 function main() {
-  const source = fs.readFileSync(sourcePath, "utf8");
+  const source = [
+    fs.readFileSync(sourcePath, "utf8"),
+    fs.existsSync(characterControllerPath) ? fs.readFileSync(characterControllerPath, "utf8") : "",
+  ].join("\n");
   const config = parseConfig(source);
   const poseLibrary = readPoseReferenceLibrary();
   const audit = runJsonTool("audit_character_skeleton.js", [target]);
@@ -136,7 +140,7 @@ function main() {
   pushCheck(checks, "project-pose-reference-library", (
     poseLibrary.exists &&
     !poseLibrary.error &&
-    poseLibrary.version === 1 &&
+    poseLibrary.version === 3 &&
     poseLibrary.poses &&
     source.includes("characterPoseProjectPath") &&
     source.includes("data/character_pose_references.json")
@@ -162,13 +166,19 @@ function main() {
     missing: missingProjectPoseKeys,
     invalidBlend: posesWithInvalidBlend,
   });
-  pushCheck(checks, "ragdoll-lite-applies-authored-pose-reference", (
-    /setGlbRagdollLitePose\(now(?:,\s*dt)?\);\s*applyAuthoredPoseReference\(/.test(source) &&
-    source.includes("authoredPoseRopeProtectedKeys") &&
-    source.includes("leftShoulder") &&
-    source.includes("rope-arm-protected")
+  pushCheck(checks, "ragdoll-lite-owns-live-pose", (
+    /setGlbRagdollLitePose\(now(?:,\s*dt)?\);\s*poseReferenceState\.lastApplied\s*=\s*null;/.test(source) &&
+    !/setGlbRagdollLitePose\(now(?:,\s*dt)?\);\s*applyAuthoredPoseReference\(/.test(source)
   ), {
-    expected: "ragdollLite applies authored pose overlays while protecting the rope hand chain",
+    expected: "ragdollLite computes the live character pose without authored pose overlays fighting the solver",
+  });
+  pushCheck(checks, "runtime-knees-use-mirrored-flex-signs", (
+    /knee:\s*\[-1\.35,\s*0\.04\]/.test(source) &&
+    /leftKnee:\s*\[-0\.04,\s*1\.35\]/.test(source) &&
+    /let leftKnee = 0\.04 \+/.test(source) &&
+    /let rightKnee = -\(/.test(source)
+  ), {
+    expected: "mirrored leg bones use left-positive/right-negative screen flex for the current GLB",
   });
   pushCheck(checks, "skeleton-contract", audit.ok, {
     failures: audit.failures,
