@@ -1,12 +1,13 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-102";
+import { createCharacterController } from "./characterController.js?v=version-0-5-103";
 
-const GAME_VERSION = "v0.5.102";
-const GAMEPLAY_KEY_CODES = new Set(["Space", "KeyV", "KeyR", "KeyI", "KeyP", "KeyB", "KeyG"]);
+const GAME_VERSION = "v0.5.103";
+const GAMEPLAY_KEY_CODES = new Set(["Space", "KeyC", "KeyV", "KeyR", "KeyI", "KeyP", "KeyB", "KeyG"]);
 
 const gameShell = document.querySelector("#game-shell");
 const canvas = document.querySelector("#game");
+canvas.tabIndex = 0;
 const scoreEl = document.querySelector("#score");
 const speedEl = document.querySelector("#speed");
 const ropeEl = document.querySelector("#rope");
@@ -9405,7 +9406,19 @@ gameShell.addEventListener("touchmove", suppressNativeTouch, { passive: false, c
 gameShell.addEventListener("touchend", suppressNativeTouch, { passive: false, capture: true });
 gameShell.addEventListener("touchcancel", suppressNativeTouch, { passive: false, capture: true });
 
-window.addEventListener("keydown", (event) => {
+function isEditableKeyTarget(target) {
+  if (!(target instanceof Element)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return (
+    target.isContentEditable ||
+    tagName === "input" ||
+    tagName === "textarea" ||
+    tagName === "select"
+  );
+}
+
+function handleGameKeyDown(event) {
+  if (isEditableKeyTarget(event.target)) return;
   if (event.code === "Space") event.preventDefault();
   if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") {
     if (state.animatorMode && state.paused) {
@@ -9422,12 +9435,13 @@ window.addEventListener("keydown", (event) => {
   if (event.code === "Space") state.keys.add(event.code);
 
   if (event.code === "Space") {
+    event.preventDefault();
     state.spaceDownAt = performance.now() / 1000;
     state.spaceIsDown = true;
     state.spaceHadAnchor = false;
     jumpFromPlatform();
   }
-  if (event.code === "KeyV") queueFlourish(performance.now() / 1000);
+  if (event.code === "KeyC" || event.code === "KeyV") queueFlourish(performance.now() / 1000);
   if (event.code === "KeyR") reset();
   if (event.code === "KeyI") setInspectFrozen(!state.inspectFrozen, performance.now() / 1000);
   if (event.code === "KeyP") setPaused(!state.paused);
@@ -9440,9 +9454,10 @@ window.addEventListener("keydown", (event) => {
     if (config.debugGlbNeutralOnly) resetGlbPivotAngles();
     syncCharacterSourceVisibility();
   }
-});
+}
 
-window.addEventListener("keyup", (event) => {
+function handleGameKeyUp(event) {
+  if (isEditableKeyTarget(event.target)) return;
   state.keys.delete(event.code);
   if (state.inspectFrozen && event.code === "Space") {
     event.preventDefault();
@@ -9455,7 +9470,10 @@ window.addEventListener("keyup", (event) => {
     state.spaceIsDown = false;
     state.spaceHadAnchor = false;
   }
-});
+}
+
+document.addEventListener("keydown", handleGameKeyDown, { capture: true });
+document.addEventListener("keyup", handleGameKeyUp, { capture: true });
 
 canvas.addEventListener("pointerdown", startPointerControl);
 canvas.addEventListener("pointermove", dragEditorObject);
