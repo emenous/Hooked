@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-119";
+import { createCharacterController } from "./characterController.js?v=version-0-5-120";
 
-const GAME_VERSION = "v0.5.119";
+const GAME_VERSION = "v0.5.120";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -1662,13 +1662,26 @@ function createSignTexture(label, color) {
 
 function createBuilding(width, height, color, windowColor, signLabel = "") {
   const group = new THREE.Group();
-  const lowerExtension = 16;
+  const lowerExtension = 28;
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(width, height + lowerExtension, 0.6),
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.98 }),
   );
   body.position.y = height * 0.5 - lowerExtension * 0.5;
   group.add(body);
+
+  const depthBody = new THREE.Mesh(
+    new THREE.BoxGeometry(width * 1.04, lowerExtension + 18, 0.48),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+    }),
+  );
+  depthBody.position.y = -lowerExtension - 9;
+  depthBody.position.z = -0.08;
+  group.add(depthBody);
 
   const rows = Math.floor(height / 1.2);
   const cols = Math.max(1, Math.floor(width / 0.55));
@@ -2010,6 +2023,13 @@ function createElevatedTrain(index, direction = -1) {
     opacity: 0.84,
     depthWrite: false,
   });
+  const windowTrailMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffa64d,
+    transparent: true,
+    opacity: 0.26,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
   const glowMaterial = new THREE.MeshBasicMaterial({
     color: 0xe08b3a,
     transparent: true,
@@ -2032,6 +2052,10 @@ function createElevatedTrain(index, direction = -1) {
     carGroup.add(body);
 
     for (let windowIndex = 0; windowIndex < 3; windowIndex += 1) {
+      const trail = new THREE.Mesh(new THREE.PlaneGeometry(1.9 + windowIndex * 0.28, 0.18), windowTrailMaterial);
+      trail.position.set(-2.26 + windowIndex * 1.72, 0.08, 0.105);
+      carGroup.add(trail);
+
       const win = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.2, 0.06), windowMaterial);
       win.position.set(-1.72 + windowIndex * 1.72, 0.08, 0.12);
       carGroup.add(win);
@@ -10242,6 +10266,10 @@ function applyPlayerAnimation(now, flourishProgress, dt) {
     poseRotation = THREE.MathUtils.clamp(-state.velocity.x * 0.03 + 0.22, -0.2, 0.7);
   } else if (state.playerAnimation === "falling") {
     poseRotation = 0.35;
+  }
+
+  if (airborne && state.facing > 0) {
+    poseRotation -= THREE.MathUtils.degToRad(20);
   }
 
   if (flourishProgress > 0) {
