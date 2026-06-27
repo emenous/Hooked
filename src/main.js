@@ -322,6 +322,17 @@ const editorUi = {
   fxQuality: fxQualitySettings.level,
   sfxMuted: false,
   sfxVolume: 0.7,
+  layerTarget: "playarea",
+  skyboxVisible: true,
+  backgroundVisible: true,
+  midgroundVisible: true,
+  playareaVisible: true,
+  foregroundVisible: true,
+  skyboxOpacity: 1,
+  backgroundOpacity: 1,
+  midgroundOpacity: 1,
+  playareaOpacity: 1,
+  foregroundOpacity: 1,
 };
 
 let tweakPane = null;
@@ -957,19 +968,22 @@ const scene = new THREE.Scene();
 const gameplayFog = new THREE.Fog(0x21172c, 46, 108);
 scene.fog = gameplayFog;
 
+const skyboxLayer = new THREE.Group();
 const backgroundLayer = new THREE.Group();
 const midgroundLayer = new THREE.Group();
 const gameplayLayer = new THREE.Group();
 const foregroundLayer = new THREE.Group();
+skyboxLayer.name = "skyboxLayer";
 backgroundLayer.name = "backgroundLayer";
 midgroundLayer.name = "midgroundLayer";
 gameplayLayer.name = "gameplayLayer";
 foregroundLayer.name = "foregroundLayer";
+skyboxLayer.renderOrder = -10;
 backgroundLayer.renderOrder = 0;
 midgroundLayer.renderOrder = 10;
 gameplayLayer.renderOrder = 20;
 foregroundLayer.renderOrder = 40;
-scene.add(backgroundLayer, midgroundLayer, gameplayLayer, foregroundLayer);
+scene.add(skyboxLayer, backgroundLayer, midgroundLayer, gameplayLayer, foregroundLayer);
 
 function addToLayer(layer, object, layerName) {
   object.userData.layerName = layerName;
@@ -1122,9 +1136,9 @@ const parallaxLayers = {
     speedMultiplier: 0,
     verticalMultiplier: 0,
     wrapWidth: 180,
-    parent: backgroundLayer,
-    layerName: "backgroundLayer",
-    renderOrder: 0,
+    parent: skyboxLayer,
+    layerName: "skyboxLayer",
+    renderOrder: -10,
   }),
   moon: new ParallaxLayer({
     name: "moon",
@@ -1133,9 +1147,9 @@ const parallaxLayers = {
     verticalMultiplier: 0.02,
     wrapWidth: 150,
     ambientSpeed: 0.02,
-    parent: backgroundLayer,
-    layerName: "backgroundLayer",
-    renderOrder: 1,
+    parent: skyboxLayer,
+    layerName: "skyboxLayer",
+    renderOrder: -9,
   }),
   stars: new ParallaxLayer({
     name: "stars",
@@ -1144,9 +1158,9 @@ const parallaxLayers = {
     verticalMultiplier: 0.01,
     wrapWidth: 150,
     ambientSpeed: 0.01,
-    parent: backgroundLayer,
-    layerName: "backgroundLayer",
-    renderOrder: 1,
+    parent: skyboxLayer,
+    layerName: "skyboxLayer",
+    renderOrder: -8,
   }),
   distantClouds: new ParallaxLayer({
     name: "distantClouds",
@@ -1283,6 +1297,149 @@ const buildModeHiddenAtmosphereLayers = [
   "foregroundPowerlines",
 ];
 const buildModeLayerState = new Map();
+
+const sceneLayerOptions = {
+  Skybox: "skybox",
+  Background: "background",
+  Midground: "midground",
+  Playarea: "playarea",
+  Foreground: "foreground",
+};
+
+const sceneLayers = {
+  skybox: {
+    label: "Skybox",
+    group: skyboxLayer,
+    order: -10,
+    defaultZ: -60,
+    visibleKey: "skyboxVisible",
+    opacityKey: "skyboxOpacity",
+  },
+  background: {
+    label: "Background",
+    group: backgroundLayer,
+    order: 0,
+    defaultZ: -38,
+    visibleKey: "backgroundVisible",
+    opacityKey: "backgroundOpacity",
+  },
+  midground: {
+    label: "Midground",
+    group: midgroundLayer,
+    order: 10,
+    defaultZ: -18,
+    visibleKey: "midgroundVisible",
+    opacityKey: "midgroundOpacity",
+  },
+  playarea: {
+    label: "Playarea",
+    group: gameplayLayer,
+    order: 20,
+    defaultZ: 0,
+    visibleKey: "playareaVisible",
+    opacityKey: "playareaOpacity",
+  },
+  foreground: {
+    label: "Foreground",
+    group: foregroundLayer,
+    order: 40,
+    defaultZ: 14,
+    visibleKey: "foregroundVisible",
+    opacityKey: "foregroundOpacity",
+  },
+};
+
+function getSceneLayer(layerKey = "playarea") {
+  return sceneLayers[layerKey] ?? sceneLayers.playarea;
+}
+
+function getObjectLayerKey(object) {
+  return object?.layerKey ?? object?.mesh?.userData?.editorLayerKey ?? object?.group?.userData?.editorLayerKey ?? "playarea";
+}
+
+function markObjectSceneLayer(object, layerKey) {
+  if (!object) return;
+  const layer = getSceneLayer(layerKey);
+  object.layerKey = layerKey;
+  getEditableObjectNodes(object).forEach((node) => {
+    if (!node) return;
+    node.userData.editorLayerKey = layerKey;
+    node.userData.layerName = `${layerKey}Layer`;
+    node.renderOrder = layer.order;
+    node.traverse?.((child) => {
+      child.userData.editorLayerKey = layerKey;
+      child.userData.layerName = `${layerKey}Layer`;
+      child.renderOrder = layer.order;
+    });
+  });
+}
+
+function getEditableObjectNodes(object) {
+  if (!object) return [];
+  if (object.type === "anchor") return [object.mesh, object.hitMesh, object.debugAnchor].filter(Boolean);
+  if (object.type === "hazard") return [object.mesh, object.hitMesh].filter(Boolean);
+  if (object.type === "bonus") return [object.mesh, object.hitMesh].filter(Boolean);
+  if (object.type === "slowmo") return [object.group, object.hitMesh].filter(Boolean);
+  if (object.type === "finish") return [object.building, object.roof, object.beacon, object.hitMesh, object.platform?.mesh].filter(Boolean);
+  return [];
+}
+
+function reparentPreserveWorld(node, parent) {
+  if (!node || !parent || node.parent === parent) return;
+  node.updateWorldMatrix(true, false);
+  const worldPosition = new THREE.Vector3();
+  const worldQuaternion = new THREE.Quaternion();
+  const worldScale = new THREE.Vector3();
+  node.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
+  parent.add(node);
+  node.position.copy(worldPosition);
+  node.quaternion.copy(worldQuaternion);
+  node.scale.copy(worldScale);
+}
+
+function moveEditableObjectToLayer(object, layerKey = "playarea") {
+  if (!object) return;
+  const layer = getSceneLayer(layerKey);
+  getEditableObjectNodes(object).forEach((node) => reparentPreserveWorld(node, layer.group));
+  markObjectSceneLayer(object, layerKey);
+  syncEditorPane();
+}
+
+function moveSelectedObjectToLayer(layerKey = editorUi.layerTarget) {
+  if (!state.selectedObject) return;
+  moveEditableObjectToLayer(state.selectedObject, layerKey);
+  saveEditorLayout();
+}
+
+function setLayerVisibility(layerKey, visible) {
+  getSceneLayer(layerKey).group.visible = Boolean(visible);
+}
+
+function setLayerOpacity(layerKey, opacity) {
+  const layerOpacity = THREE.MathUtils.clamp(Number(opacity), 0, 1);
+  getSceneLayer(layerKey).group.traverse((node) => {
+    const materials = Array.isArray(node.material) ? node.material : node.material ? [node.material] : [];
+    materials.forEach((material) => {
+      if (material.userData.baseLayerOpacity == null) material.userData.baseLayerOpacity = material.opacity ?? 1;
+      material.opacity = material.userData.baseLayerOpacity * layerOpacity;
+      material.transparent = material.transparent || layerOpacity < 1 || material.opacity < 1;
+    });
+  });
+}
+
+function mergeEditableObjectsInLayer(layerKey = editorUi.layerTarget) {
+  const layer = getSceneLayer(layerKey);
+  const objects = editableObjects.filter((object) => getObjectLayerKey(object) === layerKey && object.type !== "finish");
+  if (objects.length < 2) return;
+
+  const mergedGroup = new THREE.Group();
+  mergedGroup.name = `${layerKey}MergedObject`;
+  mergedGroup.userData.editorMergedLayer = layerKey;
+  layer.group.add(mergedGroup);
+  objects.forEach((object) => {
+    getEditableObjectNodes(object).forEach((node) => reparentPreserveWorld(node, mergedGroup));
+  });
+}
 
 const debugSettings = {
   timeScale: 1,
@@ -4553,6 +4710,9 @@ function setGlbRelativePose(now) {
   const swing = clampJoint(localVelocityX / 20, -0.55, 0.65);
   const tuck = getFlourishTuck();
   const rollTuck = state.flourishSpinRemaining > 0 ? THREE.MathUtils.smootherstep(tuck, 0, 1) : 0;
+  const backTuckWaistTighten = state.flourishVariant === "backFlip" && state.velocity.x > 0.5
+    ? -THREE.MathUtils.degToRad(30) * rollTuck
+    : 0;
 
   const pelvis = speedLean * 0.22 - verticalLean * 0.12;
   const waist = speedLean * 0.28 - verticalLean * 0.22 + idleBreath * 0.01;
@@ -4560,7 +4720,7 @@ function setGlbRelativePose(now) {
 
   setGlbPivotAngle(pivots.root, 0);
   const pelvisWorld = clampAngle(THREE.MathUtils.lerp(pelvis, 0.24, rollTuck), glbJointLimits.torso);
-  const waistWorld = clampAngle(THREE.MathUtils.lerp(waist, -0.1, rollTuck), glbJointLimits.torso);
+  const waistWorld = clampAngle(THREE.MathUtils.lerp(waist, -0.1, rollTuck) + backTuckWaistTighten, glbJointLimits.torso);
   const chestWorld = clampAngle(THREE.MathUtils.lerp(chest, -0.24, rollTuck), glbJointLimits.torso);
   setGlbPivotAngle(pivots.pelvis ?? pivots.torso, pelvisWorld);
   setGlbPivotAngle(pivots.waist, clampAngle(waistWorld - pelvisWorld, glbJointLimits.torso));
@@ -5077,6 +5237,7 @@ function syncEditorPane() {
   editorUi.fxQuality = fxQualitySettings.level;
   editorUi.sfxMuted = sfx.settings.sfxMuted;
   editorUi.sfxVolume = sfx.settings.sfxVolume;
+  if (state.selectedObject) editorUi.layerTarget = getObjectLayerKey(state.selectedObject);
 
   syncingEditorPane = true;
   for (const binding of tweakPaneBindings) binding.refresh?.();
@@ -5120,17 +5281,18 @@ async function initializeEditorPane() {
   addTweakBinding(tweakPane, editorUi, "level", { label: "Level", options: levelOptions }, (value) => {
     applyLevel(value, { preserveSavedLayout: true });
   });
+  const objectFolder = tweakPane.addFolder({ title: "Objects" });
   addTweakBinding(
-    tweakPane,
+    objectFolder,
     editorUi,
     "objectType",
     {
-      label: "Object",
+      label: "Add",
       options: {
         Anchor: "anchor",
-        "Slow ring": "slowmo",
-        Obstacle: "hazard",
+        "Laser gate": "hazard",
         "Score ring": "bonus",
+        "Slow ring": "slowmo",
         Finish: "finish",
       },
     },
@@ -5138,15 +5300,46 @@ async function initializeEditorPane() {
       if (objectTypeSelect) objectTypeSelect.value = value;
     },
   );
-
-  const objectFolder = tweakPane.addFolder({ title: "Objects" });
-  objectFolder.addButton({ title: "Add selected" }).on("click", () => addEditorObject());
+  objectFolder.addButton({ title: "Add object" }).on("click", () => addEditorObject());
   objectFolder.addButton({ title: "Remove selected" }).on("click", () => removeSelectedEditorObject());
   objectFolder.addButton({ title: "Reset layout" }).on("click", () => {
     resetEditorLayout();
     reset();
     setPaused(true);
   });
+
+  const layersFolder = tweakPane.addFolder({ title: "Layers", expanded: false });
+  addTweakBinding(
+    layersFolder,
+    editorUi,
+    "layerTarget",
+    { label: "Layer", options: sceneLayerOptions },
+    () => {},
+  );
+  layersFolder.addButton({ title: "Move selected" }).on("click", () => {
+    moveSelectedObjectToLayer(editorUi.layerTarget);
+    syncEditorPane();
+  });
+  layersFolder.addButton({ title: "Merge layer" }).on("click", () => {
+    mergeEditableObjectsInLayer(editorUi.layerTarget);
+    syncEditorPane();
+  });
+  for (const [layerKey, layer] of Object.entries(sceneLayers)) {
+    addTweakBinding(layersFolder, editorUi, layer.visibleKey, { label: `${layer.label} show` }, (value) => {
+      setLayerVisibility(layerKey, value);
+    });
+    addTweakBinding(
+      layersFolder,
+      editorUi,
+      layer.opacityKey,
+      { label: `${layer.label} opacity`, min: 0, max: 1, step: 0.05 },
+      (value) => setLayerOpacity(layerKey, value),
+    );
+  }
+  for (const [layerKey, layer] of Object.entries(sceneLayers)) {
+    setLayerVisibility(layerKey, editorUi[layer.visibleKey]);
+    setLayerOpacity(layerKey, editorUi[layer.opacityKey]);
+  }
 
   const viewFolder = tweakPane.addFolder({ title: "View" });
   addTweakBinding(
@@ -5189,7 +5382,7 @@ async function initializeEditorPane() {
     syncEditorPane();
   });
 
-  const animatorFolder = tweakPane.addFolder({ title: "Animator" });
+  const animatorFolder = tweakPane.addFolder({ title: "Character", expanded: false });
   animatorFolder.addButton({ title: "Animate" }).on("click", () => {
     setAnimatorMode(!state.animatorMode);
     syncEditorPane();
@@ -5977,6 +6170,32 @@ const hazardMaterial = new THREE.MeshStandardMaterial({
   emissive: 0x43100d,
   roughness: 0.5,
 });
+const laserGateFrameMaterial = new THREE.MeshStandardMaterial({
+  color: 0x230709,
+  emissive: 0x2c0305,
+  roughness: 0.42,
+});
+const laserGateRedMaterial = new THREE.MeshBasicMaterial({
+  color: 0xff1717,
+  transparent: true,
+  opacity: 0.88,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
+const laserGateCoreMaterial = new THREE.MeshBasicMaterial({
+  color: 0xffffff,
+  transparent: true,
+  opacity: 0.96,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
+const laserGateCrackleMaterial = new THREE.LineBasicMaterial({
+  color: 0xffffff,
+  transparent: true,
+  opacity: 0.94,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
 const bonusMaterial = new THREE.MeshStandardMaterial({
   color: 0x9dc4ff,
   emissive: 0x162f64,
@@ -6533,6 +6752,7 @@ function selectEditorObject(object) {
 function registerEditableObject(object) {
   editableObjects.push(object);
   object.hitMesh.userData.editorObject = object;
+  markObjectSceneLayer(object, object.layerKey ?? "playarea");
   return object;
 }
 
@@ -6584,6 +6804,10 @@ function removeFromArray(array, item) {
   if (index >= 0) array.splice(index, 1);
 }
 
+function removeObjectNodesFromParents(object) {
+  getEditableObjectNodes(object).forEach((node) => node.parent?.remove(node));
+}
+
 function removeEditableObject(object) {
   if (!object || object.type === "finish") return;
 
@@ -6594,16 +6818,16 @@ function removeEditableObject(object) {
 
   if (object.type === "anchor") {
     removeFromArray(anchors, object);
-    gameplayLayer.remove(object.mesh, object.hitMesh, object.debugAnchor);
+    removeObjectNodesFromParents(object);
   } else if (object.type === "hazard") {
     removeFromArray(hazards, object);
-    gameplayLayer.remove(object.mesh, object.hitMesh);
+    removeObjectNodesFromParents(object);
   } else if (object.type === "bonus") {
     removeFromArray(bonuses, object);
-    gameplayLayer.remove(object.mesh, object.hitMesh);
+    removeObjectNodesFromParents(object);
   } else if (object.type === "slowmo") {
     removeFromArray(slowMotionRings, object);
-    gameplayLayer.remove(object.group, object.hitMesh);
+    removeObjectNodesFromParents(object);
   }
 }
 
@@ -6663,14 +6887,178 @@ function addAnchor(x, y) {
   return anchor;
 }
 
+function getLaserCountForHeight(height) {
+  return Math.max(4, Math.min(16, Math.round(Math.max(height, 1.5) / 0.64)));
+}
+
+function createLaserGateBeam(width, y, index, count) {
+  const group = new THREE.Group();
+  group.position.set(0, y, 0.18 + index * 0.006);
+
+  const perspective = count <= 1 ? 0 : (index / (count - 1) - 0.5);
+  const beamWidth = Math.max(width * (1.08 - perspective * 0.08), 1.15);
+
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: droneGlowTexture,
+    color: 0xff1c1c,
+    transparent: true,
+    opacity: 0.68,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending,
+  }));
+  glow.scale.set(beamWidth * 1.8, 0.7, 1);
+
+  const redShell = new THREE.Mesh(
+    new THREE.PlaneGeometry(beamWidth, 0.22),
+    laserGateRedMaterial.clone(),
+  );
+  const whiteCore = new THREE.Mesh(
+    new THREE.PlaneGeometry(beamWidth * 0.92, 0.075),
+    laserGateCoreMaterial.clone(),
+  );
+  redShell.position.z = 0.04;
+  whiteCore.position.z = 0.08;
+
+  const crackleGeometry = new THREE.BufferGeometry();
+  const cracklePoints = 7;
+  const cracklePositions = new Float32Array(cracklePoints * 3);
+  crackleGeometry.setAttribute("position", new THREE.BufferAttribute(cracklePositions, 3));
+  const crackle = new THREE.Line(crackleGeometry, laserGateCrackleMaterial.clone());
+  crackle.position.z = 0.12;
+
+  group.add(glow, redShell, whiteCore, crackle);
+  return {
+    group,
+    glow,
+    redShell,
+    whiteCore,
+    crackle,
+    cracklePositions,
+    width: beamWidth,
+    y,
+    collisionHalfHeight: 0.16,
+    index,
+    phase: Math.random() * Math.PI * 2,
+    sparkAt: 0,
+  };
+}
+
+function createLaserGatewayVisual(width, height) {
+  const group = new THREE.Group();
+  group.name = "laserGateway";
+  const frameWidth = Math.max(width, 1.15);
+  const frameDepth = 0.3;
+  const postWidth = 0.11;
+
+  const leftPost = new THREE.Mesh(new THREE.BoxGeometry(postWidth, height, frameDepth), laserGateFrameMaterial);
+  const rightPost = leftPost.clone();
+  leftPost.position.set(-frameWidth * 0.5, 0, -0.08);
+  rightPost.position.set(frameWidth * 0.5, 0, -0.08);
+  group.add(leftPost, rightPost);
+
+  const count = getLaserCountForHeight(height);
+  const usableHeight = Math.max(height - 0.55, 0.8);
+  const lasers = [];
+  for (let index = 0; index < count; index += 1) {
+    const amount = count === 1 ? 0.5 : index / (count - 1);
+    const y = -usableHeight * 0.5 + amount * usableHeight;
+    const laser = createLaserGateBeam(frameWidth, y, index, count);
+    group.add(laser.group);
+    lasers.push(laser);
+  }
+
+  group.userData.lasers = lasers;
+  group.userData.gateCycleOffset = Math.random() * 4;
+  return { group, lasers };
+}
+
+function getLaserGateCycle(hazard, now) {
+  const cycle = (now + (hazard.gateCycleOffset ?? 0)) % 4;
+  return {
+    cycle,
+    open: cycle >= 3,
+    openProgress: THREE.MathUtils.clamp(cycle - 3, 0, 1),
+    closeProgress: THREE.MathUtils.clamp(cycle / 0.22, 0, 1),
+  };
+}
+
+function updateLaserGateway(hazard, now, dt) {
+  if (!hazard?.lasers) return;
+  const gateCycle = getLaserGateCycle(hazard, now);
+  hazard.gateOpen = gateCycle.open;
+  const count = Math.max(1, hazard.lasers.length);
+
+  for (const [index, laser] of hazard.lasers.entries()) {
+    const stagger = index * (0.18 / count);
+    const openingAmount = gateCycle.open
+      ? THREE.MathUtils.smoothstep(THREE.MathUtils.clamp((gateCycle.openProgress - stagger) / 0.16, 0, 1), 0, 1)
+      : 0;
+    const closingAmount = gateCycle.open
+      ? 0
+      : THREE.MathUtils.smoothstep(THREE.MathUtils.clamp((gateCycle.closeProgress - stagger) / 0.16, 0, 1), 0, 1);
+    const beamClosed = gateCycle.open ? 1 - openingAmount : closingAmount;
+    const flickerPulse = beamClosed > 0.02 && beamClosed < 0.98
+      ? (Math.sin(now * 88 + laser.phase + index * 1.7) > -0.15 ? 1 : 0.22)
+      : 1;
+    const pulse = 0.8 + Math.sin(now * 18 + laser.phase) * 0.2;
+    const alpha = beamClosed * flickerPulse;
+    const coreAlpha = 0.86 * alpha;
+    const scaleY = THREE.MathUtils.lerp(0.12, 0.92 + pulse * 0.12, beamClosed);
+
+    laser.group.visible = alpha > 0.02;
+    laser.redShell.scale.set(1, scaleY, 1);
+    laser.whiteCore.scale.set(1, THREE.MathUtils.clamp(scaleY * 0.82, 0.12, 1), 1);
+    laser.glow.material.opacity = 0.28 * alpha + 0.25 * pulse * alpha;
+    laser.redShell.material.opacity = 0.62 * alpha + 0.18 * pulse * alpha;
+    laser.whiteCore.material.opacity = coreAlpha;
+    laser.crackle.material.opacity = 0.72 * alpha;
+
+    const snap = Math.floor(now * 28 + index * 9);
+    const positions = laser.cracklePositions;
+    const points = positions.length / 3;
+    for (let point = 0; point < points; point += 1) {
+      const amount = point / (points - 1);
+      const jag = Math.sin((snap + 1) * 37.7 + point * 91.3 + laser.phase) * 43758.5453;
+      const offset = (jag - Math.floor(jag) - 0.5) * 0.18 * Math.sin(amount * Math.PI);
+      positions[point * 3] = -laser.width * 0.5 + amount * laser.width;
+      positions[point * 3 + 1] = offset;
+      positions[point * 3 + 2] = 0.12;
+    }
+    laser.crackle.geometry.attributes.position.needsUpdate = true;
+
+    if (!gateCycle.open && beamClosed > 0.75 && now >= laser.sparkAt && !state.paused) {
+      laser.sparkAt = now + 0.04 + Math.random() * 0.08;
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const position = characterScratchA.set(
+        hazard.mesh.position.x + (Math.random() - 0.5) * laser.width * 0.75,
+        hazard.mesh.position.y + laser.y + (Math.random() - 0.5) * 0.12,
+        0.5,
+      );
+      const velocity = characterScratchB.set(
+        side * (0.4 + Math.random() * 1.2),
+        -0.35 - Math.random() * 1.7,
+        0,
+      );
+      spawnPhysicsSpark(position, velocity, {
+        color: Math.random() < 0.36 ? 0xffffff : 0xff2424,
+        life: 0.18 + Math.random() * 0.22,
+        size: 0.72,
+        opacity: 0.95,
+      });
+    }
+  }
+}
+
 function addHazard(x, y, width, height) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.8), hazardMaterial);
+  const gateway = createLaserGatewayVisual(width, height);
+  const mesh = gateway.group;
   mesh.position.set(x, y, 0);
   addGameplay(mesh);
   const hitMesh = new THREE.Mesh(new THREE.BoxGeometry(width + 0.65, height + 0.65, 0.9), anchorHitMaterial.clone());
   hitMesh.position.set(x, y, 0);
   addGameplay(hitMesh);
-  const hazard = { type: "hazard", mesh, hitMesh, width, height, passed: false };
+  const hazard = { type: "hazard", mesh, hitMesh, width, height, lasers: gateway.lasers, passed: false };
   hazards.push(hazard);
   registerEditableObject(hazard);
   return hazard;
@@ -7005,22 +7393,29 @@ function serializeEditorLayout() {
   return {
     level: currentLevelId,
     start: startPlatform ? [Number(startPlatform.x.toFixed(2)), Number(startPlatform.y.toFixed(2))] : preset.start,
-    anchors: anchors.map((anchor) => [Number(anchor.position.x.toFixed(2)), Number(anchor.position.y.toFixed(2))]),
+    anchors: anchors.map((anchor) => [
+      Number(anchor.position.x.toFixed(2)),
+      Number(anchor.position.y.toFixed(2)),
+      getObjectLayerKey(anchor),
+    ]),
     hazards: hazards.map((hazard) => [
       Number(hazard.mesh.position.x.toFixed(2)),
       Number(hazard.mesh.position.y.toFixed(2)),
       hazard.width,
       hazard.height,
+      getObjectLayerKey(hazard),
     ]),
     bonuses: bonuses.map((bonus) => [
       Number(bonus.mesh.position.x.toFixed(2)),
       Number(bonus.mesh.position.y.toFixed(2)),
+      getObjectLayerKey(bonus),
     ]),
     slowMotionRings: slowMotionRings.map((powerup) => [
       Number(powerup.group.position.x.toFixed(2)),
       Number(powerup.group.position.y.toFixed(2)),
+      getObjectLayerKey(powerup),
     ]),
-    finish: finish ? [Number(finish.x.toFixed(2)), Number(finish.y.toFixed(2))] : null,
+    finish: finish ? [Number(finish.x.toFixed(2)), Number(finish.y.toFixed(2)), getObjectLayerKey(finish)] : null,
   };
 }
 
@@ -7036,16 +7431,16 @@ function clearEditableType(type) {
     if (object.type !== type) continue;
     if (object.type === "anchor") {
       removeFromArray(anchors, object);
-      gameplayLayer.remove(object.mesh, object.hitMesh, object.debugAnchor);
+      removeObjectNodesFromParents(object);
     } else if (object.type === "hazard") {
       removeFromArray(hazards, object);
-      gameplayLayer.remove(object.mesh, object.hitMesh);
+      removeObjectNodesFromParents(object);
     } else if (object.type === "bonus") {
       removeFromArray(bonuses, object);
-      gameplayLayer.remove(object.mesh, object.hitMesh);
+      removeObjectNodesFromParents(object);
     } else if (object.type === "slowmo") {
       removeFromArray(slowMotionRings, object);
-      gameplayLayer.remove(object.group, object.hitMesh);
+      removeObjectNodesFromParents(object);
     }
     removeFromArray(editableObjects, object);
   }
@@ -7071,33 +7466,38 @@ function applyEditorLayout(layout) {
   const anchorLayout = Array.isArray(layout.anchors) && layout.anchors.length ? layout.anchors : defaultAnchorLayout;
   anchorLayout.forEach((point) => {
     if (!Array.isArray(point) || point.length < 2) return;
-    addAnchor(Number(point[0]), Number(point[1]));
+    const anchor = addAnchor(Number(point[0]), Number(point[1]));
+    if (point[2]) moveEditableObjectToLayer(anchor, point[2]);
   });
 
   if (Array.isArray(layout.hazards)) {
     layout.hazards.forEach((item) => {
       if (!Array.isArray(item) || item.length < 4) return;
-      addHazard(Number(item[0]), Number(item[1]), Number(item[2]), Number(item[3]));
+      const hazard = addHazard(Number(item[0]), Number(item[1]), Number(item[2]), Number(item[3]));
+      if (item[4]) moveEditableObjectToLayer(hazard, item[4]);
     });
   }
 
   if (Array.isArray(layout.bonuses)) {
     layout.bonuses.forEach((item) => {
       if (!Array.isArray(item) || item.length < 2) return;
-      addBonus(Number(item[0]), Number(item[1]));
+      const bonus = addBonus(Number(item[0]), Number(item[1]));
+      if (item[2]) moveEditableObjectToLayer(bonus, item[2]);
     });
   }
 
   if (Array.isArray(layout.slowMotionRings)) {
     layout.slowMotionRings.forEach((item) => {
       if (!Array.isArray(item) || item.length < 2) return;
-      addSlowMotionRing(Number(item[0]), Number(item[1]));
+      const ring = addSlowMotionRing(Number(item[0]), Number(item[1]));
+      if (item[2]) moveEditableObjectToLayer(ring, item[2]);
     });
   }
 
   const finish = editableObjects.find((object) => object.type === "finish");
   if (finish && Array.isArray(layout.finish) && layout.finish.length >= 2) {
     moveEditableObject(finish, Number(layout.finish[0]), Number(layout.finish[1]));
+    if (layout.finish[2]) moveEditableObjectToLayer(finish, layout.finish[2]);
   }
 }
 
@@ -8511,7 +8911,6 @@ function alignLeftFacingCatchToGrappleAxis(anchor) {
 function attachAnchor(anchor) {
   const catchSpeed = Math.hypot(state.velocity.x, state.velocity.y);
   sfx.play("hookCatch", catchSpeed);
-  sfx.play("anchorNote", anchor?.index ?? 0, catchSpeed);
   state.anchor = anchor;
   state.grappled = true;
   setFacingTowardX(anchor.position.x);
@@ -8957,7 +9356,19 @@ function updateSpaceHold(now) {
 
 function updateCourse(now, dt) {
   for (const hazard of hazards) {
+    updateLaserGateway(hazard, now, dt);
     const dx = Math.abs(state.player.x - hazard.mesh.position.x);
+    if (hazard.lasers?.length) {
+      if (hazard.gateOpen) continue;
+      const localY = state.player.y - hazard.mesh.position.y;
+      const hitsClosedLaser = hazard.lasers.some((laser) => (
+        dx < laser.width / 2 + 0.34
+        && Math.abs(localY - laser.y) < laser.collisionHalfHeight + 0.62
+      ));
+      if (hitsClosedLaser) crash(now);
+      continue;
+    }
+
     const dy = Math.abs(state.player.y - hazard.mesh.position.y);
     if (dx < hazard.width / 2 + 0.34 && dy < hazard.height / 2 + 0.65) {
       crash(now);
@@ -10244,6 +10655,7 @@ function updateFacingDirection() {
 function applyPlayerAnimation(now, flourishProgress, dt) {
   state.playerAnimation = resolvePlayerAnimationState();
   updateFacingDirection();
+  const airborne = state.hasLaunched && !state.grounded;
   let flourishFlip = 0;
   let flourishTwirl = 0;
   let flourishTuck = 0;
