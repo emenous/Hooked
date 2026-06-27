@@ -1087,6 +1087,15 @@ body.perf-danger #performance-monitor {
   color: #9eb8ad;
 }
 
+#leaderboard-file-status {
+  margin: 0;
+  color: #9eb8ad;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 #next-level {
   position: relative;
   z-index: 1;

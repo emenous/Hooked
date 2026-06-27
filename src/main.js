@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-118";
+import { createCharacterController } from "./characterController.js?v=version-0-5-119";
 
-const GAME_VERSION = "v0.5.118";
+const GAME_VERSION = "v0.5.119";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -60,6 +60,7 @@ const leaderboardEntryEl = document.querySelector("#leaderboard-entry");
 const leaderboardInitialsInput = document.querySelector("#leaderboard-initials");
 const leaderboardSaveButton = document.querySelector("#leaderboard-save");
 const leaderboardListEl = document.querySelector("#leaderboard-list");
+const leaderboardFileStatusEl = document.querySelector("#leaderboard-file-status");
 const nextLevelButton = document.querySelector("#next-level");
 const gameVersionEl = document.querySelector("#game-version");
 const performanceMonitorEl = document.querySelector("#performance-monitor");
@@ -68,6 +69,7 @@ const anchorStorageKey = "hooked.anchor.layout.v5";
 const editorLayoutStorageKey = "hooked.editor.layout.v1";
 const editorLayoutStoragePrefix = "hooked.editor.layout.v2.";
 const leaderboardStorageKey = "hooked.leaderboard.v1";
+const leaderboardFileName = "hooked-leaderboard.json";
 const leaderboardMaxEntries = 10;
 const scratchTrackA = new THREE.Vector2();
 const scratchTrackB = new THREE.Vector2();
@@ -7877,7 +7879,18 @@ function sortLeaderboard(entries) {
     .slice(0, leaderboardMaxEntries);
 }
 
+let leaderboardEntries = [];
+let leaderboardFileReady = false;
+
+function setLeaderboardFileStatus(message) {
+  if (leaderboardFileStatusEl) leaderboardFileStatusEl.textContent = message;
+}
+
 function loadLeaderboard() {
+  return leaderboardEntries;
+}
+
+function loadLeaderboardFromLocalStorage() {
   try {
     return sortLeaderboard(JSON.parse(localStorage.getItem(leaderboardStorageKey)) ?? []);
   } catch {
@@ -7886,10 +7899,80 @@ function loadLeaderboard() {
   }
 }
 
-function saveLeaderboard(entries) {
+async function getLeaderboardFileHandle({ create = false } = {}) {
+  if (!navigator.storage?.getDirectory) return null;
+  const root = await navigator.storage.getDirectory();
+  return root.getFileHandle(leaderboardFileName, { create });
+}
+
+function parseLeaderboardFile(text) {
+  const payload = JSON.parse(text || "[]");
+  return sortLeaderboard(Array.isArray(payload) ? payload : payload.entries ?? []);
+}
+
+async function readLeaderboardFile() {
+  try {
+    const handle = await getLeaderboardFileHandle();
+    if (!handle) return null;
+    const file = await handle.getFile();
+    return parseLeaderboardFile(await file.text());
+  } catch (error) {
+    if (error?.name === "NotFoundError") return [];
+    throw error;
+  }
+}
+
+async function writeLeaderboardFile(entries) {
+  const handle = await getLeaderboardFileHandle({ create: true });
+  if (!handle) return false;
+  const writable = await handle.createWritable();
+  await writable.write(JSON.stringify({
+    version: 1,
+    gameVersion: GAME_VERSION,
+    updatedAt: new Date().toISOString(),
+    entries,
+  }, null, 2));
+  await writable.close();
+  return true;
+}
+
+function saveLeaderboard(entries, { writeFile = true } = {}) {
   const normalized = sortLeaderboard(entries);
+  leaderboardEntries = normalized;
   localStorage.setItem(leaderboardStorageKey, JSON.stringify(normalized));
+  if (writeFile) {
+    writeLeaderboardFile(normalized)
+      .then((saved) => {
+        leaderboardFileReady = saved;
+        setLeaderboardFileStatus(saved ? `Saved to ${leaderboardFileName}` : "Saved locally");
+      })
+      .catch(() => {
+        leaderboardFileReady = false;
+        setLeaderboardFileStatus("Saved locally; score file unavailable");
+      });
+  }
   return normalized;
+}
+
+async function hydrateLeaderboardFromFile() {
+  leaderboardEntries = loadLeaderboardFromLocalStorage();
+  renderLeaderboard(leaderboardEntries);
+  try {
+    const fileEntries = await readLeaderboardFile();
+    if (fileEntries === null) {
+      leaderboardFileReady = false;
+      setLeaderboardFileStatus("Saved locally; score file unsupported");
+      return;
+    }
+    leaderboardFileReady = true;
+    const merged = saveLeaderboard([...leaderboardEntries, ...fileEntries], { writeFile: false });
+    await writeLeaderboardFile(merged);
+    setLeaderboardFileStatus(`Loaded ${leaderboardFileName}`);
+    renderLeaderboard(merged);
+  } catch {
+    leaderboardFileReady = false;
+    setLeaderboardFileStatus("Saved locally; score file unavailable");
+  }
 }
 
 function createLeaderboardRunEntry(initials = "AAA") {
@@ -10430,6 +10513,9 @@ setupMajorPanelToggles();
 resize();
 sfx.loadSettings();
 syncAudioControls();
+leaderboardEntries = loadLeaderboardFromLocalStorage();
+renderLeaderboard(leaderboardEntries);
+hydrateLeaderboardFromFile();
 loadFxQualitySettings();
 syncGlbCharacterTransform();
 syncCharacterSourceVisibility();
