@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-122";
+import { createCharacterController } from "./characterController.js?v=version-0-5-125";
 
-const GAME_VERSION = "v0.5.122";
+const GAME_VERSION = "v0.5.125";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -1539,7 +1539,7 @@ varying vec2 vUv;
 vec4 readLayer(vec2 uv) {
   vec2 sampledUv = uv;
   if (uPixelAmount > 0.001) {
-    vec2 pixelSize = mix(vec2(1.0), vec2(18.0), clamp(uPixelAmount, 0.0, 1.0));
+    vec2 pixelSize = mix(vec2(1.0), vec2(72.0), clamp(uPixelAmount, 0.0, 1.0));
     vec2 grid = max(vec2(1.0), uResolution / pixelSize);
     sampledUv = (floor(sampledUv * grid) + 0.5) / grid;
   }
@@ -1549,7 +1549,7 @@ vec4 readLayer(vec2 uv) {
 void main() {
   float blur = clamp(uBlurAmount, 0.0, 1.0);
   vec2 texel = 1.0 / max(uResolution, vec2(1.0));
-  vec2 radius = texel * mix(0.0, 9.0, blur);
+  vec2 radius = texel * mix(0.0, 18.0, blur);
   vec4 color = readLayer(vUv) * 0.36;
   color += readLayer(vUv + vec2(radius.x, 0.0)) * 0.12;
   color += readLayer(vUv - vec2(radius.x, 0.0)) * 0.12;
@@ -1559,13 +1559,17 @@ void main() {
   color += readLayer(vUv - radius) * 0.04;
   color += readLayer(vUv + vec2(radius.x, -radius.y)) * 0.04;
   color += readLayer(vUv + vec2(-radius.x, radius.y)) * 0.04;
+  if (color.a > 0.0001) {
+    color.rgb /= color.a;
+  }
+  color.a *= clamp(max(uBlurAmount, uPixelAmount) * 1.2, 0.0, 0.86);
   gl_FragColor = color;
 }
 `,
     transparent: true,
     depthWrite: false,
     depthTest: false,
-    blending: THREE.NormalBlending,
+    blending: THREE.AdditiveBlending,
   });
 }
 
@@ -1621,16 +1625,31 @@ function renderSceneWithLayerEffects() {
   ensureLayerCompositeTargets(width, height);
 
   const layerEntries = Object.entries(sceneLayers);
-  const previousLayerVisibility = new Map(layerEntries.map(([layerKey, layer]) => [layerKey, layer.group.visible]));
+  const activeLayerEntries = layerEntries.filter(([, layer]) => (
+    Boolean(layer.group.visible) && ((layer.blurAmount ?? 0) > 0.001 || (layer.pixelAmount ?? 0) > 0.001)
+  ));
   const previousClearColor = renderer.getClearColor(new THREE.Color());
   const previousClearAlpha = renderer.getClearAlpha();
   const previousAutoClear = renderer.autoClear;
+
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(0x21172c, 1);
+  renderer.autoClear = true;
+  renderer.render(scene, camera);
+
+  if (!activeLayerEntries.length) {
+    renderer.setClearColor(previousClearColor, previousClearAlpha);
+    renderer.autoClear = previousAutoClear;
+    return;
+  }
+
+  const previousLayerVisibility = new Map(layerEntries.map(([layerKey, layer]) => [layerKey, layer.group.visible]));
 
   renderer.autoClear = true;
   renderer.setClearColor(0x000000, 0);
   for (const [, layer] of layerEntries) layer.group.visible = false;
 
-  for (const [layerKey, layer] of layerEntries) {
+  for (const [layerKey, layer] of activeLayerEntries) {
     const target = getLayerCompositeTarget(layerKey);
     layer.group.visible = Boolean(previousLayerVisibility.get(layerKey));
     renderer.setRenderTarget(target);
@@ -1639,18 +1658,23 @@ function renderSceneWithLayerEffects() {
     layer.group.visible = false;
   }
 
-  for (const [layerKey, layer] of layerEntries) {
-    layer.group.visible = Boolean(previousLayerVisibility.get(layerKey));
+  for (const [layerKey, layer] of activeLayerEntries) {
     const quad = getLayerCompositeQuad(layerKey);
     quad.visible = true;
     quad.material.uniforms.tDiffuse.value = getLayerCompositeTarget(layerKey).texture;
     quad.material.uniforms.uBlurAmount.value = layer.blurAmount ?? 0;
     quad.material.uniforms.uPixelAmount.value = layer.pixelAmount ?? 0;
   }
+  for (const [layerKey, layer] of layerEntries) {
+    layer.group.visible = Boolean(previousLayerVisibility.get(layerKey));
+    if (!activeLayerEntries.some(([activeLayerKey]) => activeLayerKey === layerKey)) {
+      const quad = layerCompositeState.quads.get(layerKey);
+      if (quad) quad.visible = false;
+    }
+  }
 
   renderer.setRenderTarget(null);
-  renderer.setClearColor(0x21172c, 1);
-  renderer.clear(true, true, true);
+  renderer.autoClear = false;
   renderer.render(layerCompositeScene, layerCompositeCamera);
 
   for (const quad of layerCompositeState.quads.values()) quad.visible = false;
