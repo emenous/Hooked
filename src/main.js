@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-126";
+import { createCharacterController } from "./characterController.js?v=version-0-5-129";
 
-const GAME_VERSION = "v0.5.126";
+const GAME_VERSION = "v0.5.129";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -214,8 +214,8 @@ const config = {
   foregroundBlurScale: 1.85,
   foregroundBaseBlurScale: 1.6,
   foregroundPowerlineBlurScale: 1.8,
-  foregroundDofBlur: 0.72,
-  foregroundMaxScreenHeightRatio: 0.5,
+  foregroundDofBlur: 1,
+  foregroundMaxScreenHeightRatio: 0.3,
   elevatedTrainSpeed: 18,
   elevatedTrainWrapWidth: 142,
   elevatedTrackSpan: 150,
@@ -1126,6 +1126,9 @@ class ParallaxLayer {
     object.userData.baseY = baseY;
     object.userData.layerName = this.layerName;
     object.renderOrder = this.renderOrder;
+    if (this.layerName === "foregroundLayer") {
+      capObjectHeightToScreen(object);
+    }
     object.traverse?.((child) => {
       child.userData.layerName = this.layerName;
       child.renderOrder = this.renderOrder;
@@ -1150,6 +1153,9 @@ class ParallaxLayer {
       object.position.x =
         cameraX + wrapCentered(object.userData.baseX - cameraX * this.speedMultiplier - drift, this.wrapWidth);
       object.position.y = object.userData.baseY + cameraY * this.verticalMultiplier;
+      if (this.layerName === "foregroundLayer") {
+        capObjectHeightToScreen(object);
+      }
     }
   }
 }
@@ -1550,7 +1556,7 @@ vec4 readLayer(vec2 uv) {
 void main() {
   float blur = clamp(uBlurAmount, 0.0, 1.0);
   vec2 texel = 1.0 / max(uResolution, vec2(1.0));
-  vec2 radius = texel * mix(0.0, 18.0, blur);
+  vec2 radius = texel * mix(0.0, 30.0, blur);
   vec4 color = readLayer(vUv) * 0.36;
   color += readLayer(vUv + vec2(radius.x, 0.0)) * 0.12;
   color += readLayer(vUv - vec2(radius.x, 0.0)) * 0.12;
@@ -5124,18 +5130,10 @@ function updatePullPhaseTween(dt = config.physicsStep) {
   return state.pullPhaseAmount;
 }
 
-function applyGlbPullPhaseOffset(dt = config.physicsStep) {
-  if (!glbCharacter.loaded || state.animatorMode) return;
+function getPullPhaseVisualRotation(dt = config.physicsStep) {
   const amount = updatePullPhaseTween(dt);
-  if (amount <= 0.001) return;
-
   const eased = THREE.MathUtils.smootherstep(amount, 0, 1);
-  const offset = THREE.MathUtils.degToRad(90) * eased;
-  const pivots = new Set(Object.values(glbCharacter.pivots).filter(Boolean));
-  for (const pivot of pivots) {
-    const current = glbCharacter.currentAngles.get(pivot) ?? 0;
-    setGlbPivotAngle(pivot, current + offset);
-  }
+  return THREE.MathUtils.degToRad(90) * eased;
 }
 
 function setGlbRelativePose(now) {
@@ -5371,7 +5369,6 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
       : config.glbPoseSmoothing * 0.9;
     glbPoseSmoothingAlpha = 1 - Math.exp(-Math.max(dt, 0.001) * smoothingRate);
     setGlbRagdollLitePose(now, dt);
-    applyGlbPullPhaseOffset(dt);
     poseReferenceState.lastApplied = null;
     poseReferenceState.lastAppliedClip = null;
     glbPoseSmoothingAlpha = 1;
@@ -5391,13 +5388,11 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
     setGlbRelativePose(now);
     applyAuthoredPoseReference();
     applyPoseClipFrame();
-    applyGlbPullPhaseOffset(dt);
     glbPoseSmoothingAlpha = 1;
     return;
   }
 
   resetGlbPivotAngles(false);
-  applyGlbPullPhaseOffset(dt);
   glbPoseSmoothingAlpha = 1;
 }
 
@@ -11226,9 +11221,11 @@ function applyPlayerAnimation(now, flourishProgress, dt) {
   playerMesh.rotation.y = 0;
   const pulseScale = 1 + state.flourishPulse * 0.08;
   playerMesh.scale.set(pulseScale, pulseScale, 1);
-  syncGlbCharacterTransform(state.facing, flourishFlip, flourishTwirl);
+  const pullPhaseRotation = getPullPhaseVisualRotation(dt);
+  const characterVisualRotation = flourishFlip + pullPhaseRotation;
+  syncGlbCharacterTransform(state.facing, characterVisualRotation, flourishTwirl);
   if (!config.freezeGlbCharacterPose) poseGlbCharacterFromPhysics(now, dt);
-  updatePlayerRibbonPhysics(now, dt, flourishFlip);
+  updatePlayerRibbonPhysics(now, dt, characterVisualRotation);
 
 }
 
