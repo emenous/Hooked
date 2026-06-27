@@ -333,6 +333,16 @@ const editorUi = {
   midgroundOpacity: 1,
   playareaOpacity: 1,
   foregroundOpacity: 1,
+  skyboxBlur: 0,
+  backgroundBlur: 0,
+  midgroundBlur: 0,
+  playareaBlur: 0,
+  foregroundBlur: 0,
+  skyboxPixel: 0,
+  backgroundPixel: 0,
+  midgroundPixel: 0,
+  playareaPixel: 0,
+  foregroundPixel: 0,
 };
 
 let tweakPane = null;
@@ -397,6 +407,10 @@ const state = {
   stuntBoostArmed: false,
   stuntBurstClockArmed: false,
   stuntBurstPulse: 0,
+  pullPhaseAmount: 0,
+  pullPhaseTarget: 0,
+  pullSwingRotation: 0,
+  pullSwingDirection: 0,
   crashExploding: false,
   crashExplosionStartedAt: -100,
   playerAnimation: "idleHang",
@@ -889,7 +903,7 @@ function unlock() {
 
 function suppressNativeTouch(event) {
   if (
-    event.target instanceof Element &&
+    event.target?.closest &&
     event.target.closest("button, input, select, textarea, label, [role='button'], #editor, #game-zoom-panel, #level-complete")
   ) {
     return;
@@ -1203,7 +1217,7 @@ const parallaxLayers = {
     parent: midgroundLayer,
     layerName: "midgroundLayer",
     renderOrder: 12,
-    enabled: false,
+    enabled: true,
   }),
   nearSkyline: new ParallaxLayer({
     name: "nearSkyline",
@@ -1214,7 +1228,7 @@ const parallaxLayers = {
     parent: midgroundLayer,
     layerName: "midgroundLayer",
     renderOrder: 13,
-    enabled: false,
+    enabled: true,
   }),
   elevatedTracks: new ParallaxLayer({
     name: "elevatedTracks",
@@ -1314,6 +1328,8 @@ const sceneLayers = {
     defaultZ: -60,
     visibleKey: "skyboxVisible",
     opacityKey: "skyboxOpacity",
+    blurKey: "skyboxBlur",
+    pixelKey: "skyboxPixel",
   },
   background: {
     label: "Background",
@@ -1322,6 +1338,8 @@ const sceneLayers = {
     defaultZ: -38,
     visibleKey: "backgroundVisible",
     opacityKey: "backgroundOpacity",
+    blurKey: "backgroundBlur",
+    pixelKey: "backgroundPixel",
   },
   midground: {
     label: "Midground",
@@ -1330,6 +1348,8 @@ const sceneLayers = {
     defaultZ: -18,
     visibleKey: "midgroundVisible",
     opacityKey: "midgroundOpacity",
+    blurKey: "midgroundBlur",
+    pixelKey: "midgroundPixel",
   },
   playarea: {
     label: "Playarea",
@@ -1338,6 +1358,8 @@ const sceneLayers = {
     defaultZ: 0,
     visibleKey: "playareaVisible",
     opacityKey: "playareaOpacity",
+    blurKey: "playareaBlur",
+    pixelKey: "playareaPixel",
   },
   foreground: {
     label: "Foreground",
@@ -1346,6 +1368,8 @@ const sceneLayers = {
     defaultZ: 14,
     visibleKey: "foregroundVisible",
     opacityKey: "foregroundOpacity",
+    blurKey: "foregroundBlur",
+    pixelKey: "foregroundPixel",
   },
 };
 
@@ -1372,6 +1396,7 @@ function markObjectSceneLayer(object, layerKey) {
       child.renderOrder = layer.order;
     });
   });
+  applyLayerEffects(layerKey);
 }
 
 function getEditableObjectNodes(object) {
@@ -1425,6 +1450,102 @@ function setLayerOpacity(layerKey, opacity) {
       material.transparent = material.transparent || layerOpacity < 1 || material.opacity < 1;
     });
   });
+}
+
+function patchLayerEffectMaterial(material) {
+  if (!material || material.userData.layerEffectPatched) return;
+  const previousOnBeforeCompile = material.onBeforeCompile;
+  material.userData.layerEffectPatched = true;
+  material.userData.layerEffectUniforms = {
+    uLayerBlurAmount: { value: 0 },
+    uLayerPixelAmount: { value: 0 },
+  };
+  material.onBeforeCompile = (shader, renderer) => {
+    previousOnBeforeCompile?.(shader, renderer);
+    shader.uniforms.uLayerBlurAmount = material.userData.layerEffectUniforms.uLayerBlurAmount;
+    shader.uniforms.uLayerPixelAmount = material.userData.layerEffectUniforms.uLayerPixelAmount;
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <project_vertex>",
+      `
+vec4 mvPosition = vec4(transformed, 1.0);
+#ifdef USE_BATCHING
+  mvPosition = batchingMatrix * mvPosition;
+#endif
+#ifdef USE_INSTANCING
+  mvPosition = instanceMatrix * mvPosition;
+#endif
+mvPosition = modelViewMatrix * mvPosition;
+if (uLayerBlurAmount > 0.001) {
+  vec2 blurDir = length(mvPosition.xy) > 0.0001 ? normalize(mvPosition.xy) : vec2(1.0, 0.0);
+  mvPosition.xy += blurDir * uLayerBlurAmount * 0.035;
+}
+gl_Position = projectionMatrix * mvPosition;
+if (uLayerPixelAmount > 0.001) {
+  float grid = mix(900.0, 90.0, clamp(uLayerPixelAmount, 0.0, 1.0));
+  vec2 ndc = gl_Position.xy / max(gl_Position.w, 0.0001);
+  vec2 snapped = floor(ndc * grid + 0.5) / grid;
+  gl_Position.xy = mix(gl_Position.xy, snapped * gl_Position.w, uLayerPixelAmount);
+}
+`,
+    );
+  };
+  material.needsUpdate = true;
+}
+
+function applyLayerEffects(layerKey) {
+  const layer = getSceneLayer(layerKey);
+  const blurAmount = THREE.MathUtils.clamp(Number(editorUi[layer.blurKey] ?? 0), 0, 1);
+  const pixelAmount = THREE.MathUtils.clamp(Number(editorUi[layer.pixelKey] ?? 0), 0, 1);
+  layer.group.traverse((node) => {
+    const materials = Array.isArray(node.material) ? node.material : node.material ? [node.material] : [];
+    materials.forEach((material) => {
+      if (!material.userData.layerEffectPatched && blurAmount <= 0.001 && pixelAmount <= 0.001) return;
+      patchLayerEffectMaterial(material);
+      material.userData.layerEffectUniforms.uLayerBlurAmount.value = blurAmount;
+      material.userData.layerEffectUniforms.uLayerPixelAmount.value = pixelAmount;
+    });
+  });
+}
+
+function setLayerBlur(layerKey, value) {
+  const layer = getSceneLayer(layerKey);
+  editorUi[layer.blurKey] = THREE.MathUtils.clamp(Number(value), 0, 1);
+  applyLayerEffects(layerKey);
+}
+
+function setLayerPixel(layerKey, value) {
+  const layer = getSceneLayer(layerKey);
+  editorUi[layer.pixelKey] = THREE.MathUtils.clamp(Number(value), 0, 1);
+  applyLayerEffects(layerKey);
+}
+
+function getLayerSettingsJson() {
+  const layers = {};
+  for (const [layerKey, layer] of Object.entries(sceneLayers)) {
+    layers[layerKey] = {
+      visible: Boolean(editorUi[layer.visibleKey]),
+      opacity: Number(editorUi[layer.opacityKey] ?? 1),
+      blur: Number(editorUi[layer.blurKey] ?? 0),
+      pixel: Number(editorUi[layer.pixelKey] ?? 0),
+    };
+  }
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    layers,
+  };
+}
+
+function saveLayerSettingsJson() {
+  const blob = new Blob([JSON.stringify(getLayerSettingsJson(), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "hooked-layer-settings.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function mergeEditableObjectsInLayer(layerKey = editorUi.layerTarget) {
@@ -1819,12 +1940,14 @@ function createSignTexture(label, color) {
 
 function createBuilding(width, height, color, windowColor, signLabel = "") {
   const group = new THREE.Group();
+  group.userData.moonRimTarget = true;
   const lowerExtension = 28;
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(width, height + lowerExtension, 0.6),
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.98 }),
   );
   body.position.y = height * 0.5 - lowerExtension * 0.5;
+  body.userData.moonRimBody = true;
   group.add(body);
 
   const depthBody = new THREE.Mesh(
@@ -1886,6 +2009,73 @@ function createBuilding(width, height, color, windowColor, signLabel = "") {
     group.userData.sign = sign;
   }
 
+  return group;
+}
+
+const moonRimObjects = [];
+
+function addMoonRimToRectGroup(group, width, height, centerY = height * 0.5) {
+  const rim = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.08, Math.max(0.4, height)),
+    new THREE.MeshBasicMaterial({
+      color: 0xfff0c8,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  rim.position.set(width * 0.5 + 0.05, centerY, 0.46);
+  rim.userData.moonRim = true;
+  rim.userData.rimHalfWidth = width * 0.5;
+  rim.userData.rimHalfHeight = height * 0.5;
+  group.add(rim);
+  moonRimObjects.push(rim);
+  return rim;
+}
+
+function createDarkCityTower(index, close = false) {
+  const group = new THREE.Group();
+  const width = seededRange(index + (close ? 31 : 11), close ? 2.1 : 1.45, close ? 4.8 : 3.2);
+  const height = seededRange(index + (close ? 41 : 21), close ? 16 : 12, close ? 42 : 32);
+  const color = close
+    ? (index % 2 ? 0x070b12 : 0x0a111b)
+    : (index % 2 ? 0x0b1424 : 0x10182b);
+  const material = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: close ? 0.94 : 0.78,
+    depthWrite: false,
+  });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.46), material);
+  body.position.y = height * 0.5;
+  body.userData.moonRimBody = true;
+  group.add(body);
+  addMoonRimToRectGroup(group, width, height);
+
+  const capHeight = seededRange(index + 52, 0.3, 1.2);
+  const cap = new THREE.Mesh(
+    new THREE.BoxGeometry(width * seededRange(index + 57, 0.62, 1.12), capHeight, 0.42),
+    material.clone(),
+  );
+  cap.position.set(seededRange(index + 63, -0.28, 0.28), height + capHeight * 0.5, 0.03);
+  group.add(cap);
+
+  const slitMaterial = new THREE.MeshBasicMaterial({
+    color: index % 3 === 0 ? 0xffb65b : 0x5bbcff,
+    transparent: true,
+    opacity: close ? 0.2 : 0.14,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  for (let row = 0; row < Math.floor(height / 6.2); row += 1) {
+    if ((row + index) % 3 === 0) continue;
+    const slit = new THREE.Mesh(new THREE.PlaneGeometry(width * 0.45, 0.05), slitMaterial);
+    slit.position.set(0, 1.4 + row * 5.6, 0.3);
+    group.add(slit);
+  }
+
+  group.userData.moonRimTarget = true;
   return group;
 }
 
@@ -2199,6 +2389,7 @@ function createElevatedTrain(index, direction = -1) {
     const carGroup = new THREE.Group();
     carGroup.userData.carIndex = car;
     carGroup.userData.carTOffset = train.userData.carOffsets[car];
+    carGroup.userData.moonRimTarget = true;
 
     const glow = new THREE.Mesh(new THREE.PlaneGeometry(5.9, 1.04), glowMaterial);
     glow.position.set(0, 0, -0.05);
@@ -2206,11 +2397,16 @@ function createElevatedTrain(index, direction = -1) {
 
     const body = new THREE.Mesh(new THREE.BoxGeometry(5.45, 0.74, 0.12), bodyMaterial);
     body.position.set(0, 0, 0.02);
+    body.userData.moonRimBody = true;
     carGroup.add(body);
+    addMoonRimToRectGroup(carGroup, 5.45, 0.74, 0);
 
     for (let windowIndex = 0; windowIndex < 3; windowIndex += 1) {
-      const trail = new THREE.Mesh(new THREE.PlaneGeometry(1.9 + windowIndex * 0.28, 0.18), windowTrailMaterial);
-      trail.position.set(-2.26 + windowIndex * 1.72, 0.08, 0.105);
+      const trail = new THREE.Mesh(new THREE.PlaneGeometry(2.8 + windowIndex * 0.38, 0.16), windowTrailMaterial.clone());
+      trail.position.set(-1.72 + windowIndex * 1.72 + direction * 1.18, 0.08, 0.105);
+      trail.userData.windowTrail = true;
+      trail.userData.baseOpacity = 0.18 + windowIndex * 0.035;
+      trail.userData.trailPhase = car * 0.8 + windowIndex * 0.35;
       carGroup.add(trail);
 
       const win = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.2, 0.06), windowMaterial);
@@ -2373,6 +2569,20 @@ function createElevatedTrackSection(index) {
     const point = getPointOnPolyline(support % 2 ? lowerSpine : upperSpine, t, scratchTrackA);
     const x = point.x;
     const topY = point.y - 0.65;
+    const baseY = -13.2 - (support % 4) * 0.38;
+    const shaftHeight = topY - baseY;
+    const core = new THREE.Mesh(
+      new THREE.BoxGeometry(1.35 + (support % 3) * 0.34, Math.max(5, shaftHeight), 0.1),
+      new THREE.MeshBasicMaterial({
+        color: support % 2 ? 0x070a0f : 0x0b0d13,
+        transparent: true,
+        opacity: 0.78,
+        depthWrite: false,
+      }),
+    );
+    core.position.set(x, baseY + shaftHeight * 0.5, -0.08);
+    group.add(core);
+
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.28, 8.4, 0.12), iron);
     post.position.set(x, topY - 4.1, 0.01);
     group.add(post);
@@ -2384,6 +2594,17 @@ function createElevatedTrackSection(index) {
     diagonalB.position.x = x + 2.1;
     diagonalB.rotation.z = -0.78;
     group.add(diagonalA, diagonalB);
+  }
+
+  for (let tower = 0; tower < 12; tower += 1) {
+    const cityTower = createDarkCityTower(index * 29 + tower, tower % 3 === 0);
+    cityTower.position.set(
+      -config.elevatedTrackSpan * 0.5 + tower * (config.elevatedTrackSpan / 11) + seededRange(tower + 8.4, -1.8, 1.8),
+      -15.6 + seededRange(tower + 12.2, -1.2, 1.4),
+      -0.22 - (tower % 4) * 0.025,
+    );
+    cityTower.scale.setScalar(seededRange(tower + 17.6, 0.82, 1.22));
+    group.add(cityTower);
   }
 
   group.add(createElevatedTrain(0, -1));
@@ -2704,6 +2925,11 @@ function buildParallaxCity() {
     parallaxLayers.farSkyline.add(building, index * 5.4 - 54, -9.2);
   }
 
+  for (let index = 0; index < 16; index += 1) {
+    const tower = createDarkCityTower(index + 100, false);
+    parallaxLayers.farSkyline.add(tower, index * 8.2 - 62, -17.4 + (index % 3) * 0.25);
+  }
+
   for (let index = 0; index < 20; index += 1) {
     const width = 2.6 + (index % 5) * 0.7;
     const height = 9 + ((index * 7) % 11);
@@ -2712,6 +2938,11 @@ function buildParallaxCity() {
     const sign = index % 4 === 0 ? ["未来", "注意", "ネオ", "CYBR"][index % 4] : "";
     const building = createBuilding(width, height, color, windowColor, sign);
     parallaxLayers.nearSkyline.add(building, index * 6 - 50, -11.8);
+  }
+
+  for (let index = 0; index < 14; index += 1) {
+    const tower = createDarkCityTower(index + 200, true);
+    parallaxLayers.nearSkyline.add(tower, index * 9.0 - 58, -18.6 + (index % 4) * 0.3);
   }
 
   parallaxLayers.elevatedTracks.add(createElevatedTrackSection(0), 0, 4.2);
@@ -2742,6 +2973,35 @@ function buildParallaxCity() {
       index * 30 - 75 + seededRange(index + 61.8, -3.2, 3.8),
       -2.1 + seededRange(index + 70.3, -1.2, 0.9),
     );
+  }
+}
+
+const moonWorldPosition = new THREE.Vector3();
+const moonRimScratchPosition = new THREE.Vector3();
+
+function getMoonWorldPosition(target = moonWorldPosition) {
+  const moonItem = parallaxLayers.moon.items.find((item) => item.geometry?.parameters?.width === 28.5) ?? parallaxLayers.moon.items[0];
+  if (!moonItem) return target.set(15, 32, -56);
+  moonItem.updateWorldMatrix(true, false);
+  return moonItem.getWorldPosition(target);
+}
+
+function updateMoonRimLights(now) {
+  const moonPosition = getMoonWorldPosition(moonWorldPosition);
+  const influenceRadius = 28.5 * 0.75;
+  const fadeBand = influenceRadius * 0.42;
+
+  for (const rim of moonRimObjects) {
+    if (!rim.parent) continue;
+    rim.updateWorldMatrix(true, false);
+    rim.getWorldPosition(moonRimScratchPosition);
+    const distance = moonRimScratchPosition.distanceTo(moonPosition);
+    const intensity = 1 - THREE.MathUtils.smoothstep(distance, influenceRadius, influenceRadius + fadeBand);
+    const localMoonX = rim.parent.worldToLocal(moonPosition.clone()).x;
+    const side = localMoonX >= 0 ? 1 : -1;
+    rim.position.x = (rim.userData.rimHalfWidth ?? 1) * side + 0.05 * side;
+    rim.material.opacity = 0.62 * intensity;
+    rim.visible = intensity > 0.02;
   }
 }
 
@@ -2778,9 +3038,16 @@ function updateParallaxCity(dt, now) {
         const tangent = getTangentOnPolyline(spine, carT, scratchTrackB);
         car.position.set(point.x, point.y, 0.08);
         car.rotation.z = Math.atan2(tangent.y, tangent.x) + (direction < 0 ? Math.PI : 0);
+        car.traverse((child) => {
+          if (!child.userData?.windowTrail) return;
+          const pulse = 0.72 + Math.sin(now * 16 + child.userData.trailPhase) * 0.18;
+          child.material.opacity = child.userData.baseOpacity * pulse;
+          child.scale.x = 0.82 + pulse * 0.42;
+        });
       }
     });
   }
+  updateMoonRimLights(now);
 }
 
 buildParallaxCity();
@@ -4694,6 +4961,33 @@ function setGlbIdlePose(pivots, idleBreath, pelvisWorld, waistWorld, chestWorld)
   setGlbPivotAngle(pivots.rightAnkle, 0);
 }
 
+function updatePullPhaseTween(dt = config.physicsStep) {
+  if (!state.grappled || !state.anchor) state.pullPhaseTarget = 0;
+  const target = state.pullPhaseTarget;
+  const rate = target > state.pullPhaseAmount ? 10 : 7;
+  state.pullPhaseAmount = THREE.MathUtils.lerp(
+    state.pullPhaseAmount,
+    target,
+    1 - Math.exp(-Math.max(dt, 0.001) * rate),
+  );
+  if (state.pullPhaseAmount < 0.001 && target <= 0) state.pullPhaseAmount = 0;
+  return state.pullPhaseAmount;
+}
+
+function applyGlbPullPhaseOffset(dt = config.physicsStep) {
+  if (!glbCharacter.loaded || state.animatorMode) return;
+  const amount = updatePullPhaseTween(dt);
+  if (amount <= 0.001) return;
+
+  const eased = THREE.MathUtils.smootherstep(amount, 0, 1);
+  const offset = THREE.MathUtils.degToRad(90) * eased;
+  const pivots = new Set(Object.values(glbCharacter.pivots).filter(Boolean));
+  for (const pivot of pivots) {
+    const current = glbCharacter.currentAngles.get(pivot) ?? 0;
+    setGlbPivotAngle(pivot, current + offset);
+  }
+}
+
 function setGlbRelativePose(now) {
   const pivots = glbCharacter.pivots;
   const idleBreath = state.playerAnimation === "idleHang" ? Math.sin(now * 3.2) : 0;
@@ -4927,6 +5221,7 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
       : config.glbPoseSmoothing * 0.9;
     glbPoseSmoothingAlpha = 1 - Math.exp(-Math.max(dt, 0.001) * smoothingRate);
     setGlbRagdollLitePose(now, dt);
+    applyGlbPullPhaseOffset(dt);
     poseReferenceState.lastApplied = null;
     poseReferenceState.lastAppliedClip = null;
     glbPoseSmoothingAlpha = 1;
@@ -4946,11 +5241,13 @@ function poseGlbCharacterFromPhysics(now, dt = config.physicsStep) {
     setGlbRelativePose(now);
     applyAuthoredPoseReference();
     applyPoseClipFrame();
+    applyGlbPullPhaseOffset(dt);
     glbPoseSmoothingAlpha = 1;
     return;
   }
 
   resetGlbPivotAngles(false);
+  applyGlbPullPhaseOffset(dt);
   glbPoseSmoothingAlpha = 1;
 }
 
@@ -5255,6 +5552,29 @@ function addTweakBinding(container, object, key, options, onChange) {
   return binding;
 }
 
+function setupEditorPaneTabBehavior() {
+  if (!editorPane || editorPane.dataset.tabBehaviorReady === "true") return;
+  editorPane.dataset.tabBehaviorReady = "true";
+  editorPane.addEventListener("click", (event) => {
+    const header = event.target.closest(".tp-fldv_b");
+    const folder = header?.closest(".tp-fldv");
+    const root = folder?.parentElement;
+    if (!folder || !root || !root.classList.contains("tp-rotv_c")) return;
+
+    window.setTimeout(() => {
+      if (!folder.classList.contains("tp-fldv-expanded")) return;
+      for (const sibling of root.children) {
+        if (sibling === folder || !sibling.classList?.contains("tp-fldv-expanded")) continue;
+        sibling.querySelector(":scope > .tp-fldv_b")?.dispatchEvent(new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        }));
+      }
+    }, 0);
+  });
+}
+
 async function initializeEditorPane() {
   if (!editorPane || tweakPane) return;
 
@@ -5281,7 +5601,7 @@ async function initializeEditorPane() {
   addTweakBinding(tweakPane, editorUi, "level", { label: "Level", options: levelOptions }, (value) => {
     applyLevel(value, { preserveSavedLayout: true });
   });
-  const objectFolder = tweakPane.addFolder({ title: "Objects" });
+  const objectFolder = tweakPane.addFolder({ title: "Objects", expanded: true });
   addTweakBinding(
     objectFolder,
     editorUi,
@@ -5324,6 +5644,7 @@ async function initializeEditorPane() {
     mergeEditableObjectsInLayer(editorUi.layerTarget);
     syncEditorPane();
   });
+  layersFolder.addButton({ title: "Save layer JSON" }).on("click", () => saveLayerSettingsJson());
   for (const [layerKey, layer] of Object.entries(sceneLayers)) {
     addTweakBinding(layersFolder, editorUi, layer.visibleKey, { label: `${layer.label} show` }, (value) => {
       setLayerVisibility(layerKey, value);
@@ -5335,13 +5656,28 @@ async function initializeEditorPane() {
       { label: `${layer.label} opacity`, min: 0, max: 1, step: 0.05 },
       (value) => setLayerOpacity(layerKey, value),
     );
+    addTweakBinding(
+      layersFolder,
+      editorUi,
+      layer.blurKey,
+      { label: `${layer.label} blur`, min: 0, max: 1, step: 0.01 },
+      (value) => setLayerBlur(layerKey, value),
+    );
+    addTweakBinding(
+      layersFolder,
+      editorUi,
+      layer.pixelKey,
+      { label: `${layer.label} pixel`, min: 0, max: 1, step: 0.01 },
+      (value) => setLayerPixel(layerKey, value),
+    );
   }
   for (const [layerKey, layer] of Object.entries(sceneLayers)) {
     setLayerVisibility(layerKey, editorUi[layer.visibleKey]);
     setLayerOpacity(layerKey, editorUi[layer.opacityKey]);
+    applyLayerEffects(layerKey);
   }
 
-  const viewFolder = tweakPane.addFolder({ title: "View" });
+  const viewFolder = tweakPane.addFolder({ title: "View", expanded: false });
   addTweakBinding(
     viewFolder,
     editorUi,
@@ -5420,7 +5756,7 @@ async function initializeEditorPane() {
     syncEditorPane();
   });
 
-  const effectsFolder = tweakPane.addFolder({ title: "Effects" });
+  const effectsFolder = tweakPane.addFolder({ title: "Effects", expanded: false });
   addTweakBinding(
     effectsFolder,
     editorUi,
@@ -5436,7 +5772,7 @@ async function initializeEditorPane() {
     (value) => setFxQuality(value),
   );
 
-  const audioFolder = tweakPane.addFolder({ title: "Audio" });
+  const audioFolder = tweakPane.addFolder({ title: "Audio", expanded: false });
   addTweakBinding(audioFolder, editorUi, "sfxMuted", { label: "Mute SFX" }, (value) => setSfxMuted(value));
   addTweakBinding(
     audioFolder,
@@ -5446,6 +5782,7 @@ async function initializeEditorPane() {
     (value) => setSfxVolume(value),
   );
 
+  setupEditorPaneTabBehavior();
   syncEditorPane();
   setPaused(state.paused);
 }
@@ -6495,6 +6832,7 @@ function createDroneVisual() {
     const rotorGroup = new THREE.Group();
     rotorGroup.position.set(rotorDef.x, rotorDef.y, 0.05);
     rotorGroup.scale.set(rotorDef.scale, rotorDef.scale, 1);
+    rotorGroup.rotation.y = THREE.MathUtils.degToRad(30);
     const bladeA = new THREE.Mesh(rotorGeometry, droneRotorMaterial);
     const bladeB = new THREE.Mesh(rotorGeometry, droneRotorMaterial);
     bladeB.rotation.z = Math.PI / 2;
@@ -6891,9 +7229,12 @@ function getLaserCountForHeight(height) {
   return Math.max(4, Math.min(16, Math.round(Math.max(height, 1.5) / 0.64)));
 }
 
-function createLaserGateBeam(width, y, index, count) {
+function createLaserGateBeam(width, y, index, count, diagonalRise) {
   const group = new THREE.Group();
+  const beamAngle = Math.atan2(-diagonalRise, width);
+  const beamLengthScale = Math.hypot(width, diagonalRise) / Math.max(width, 0.001);
   group.position.set(0, y, 0.18 + index * 0.006);
+  group.rotation.z = beamAngle;
 
   const perspective = count <= 1 ? 0 : (index / (count - 1) - 0.5);
   const beamWidth = Math.max(width * (1.08 - perspective * 0.08), 1.15);
@@ -6907,14 +7248,14 @@ function createLaserGateBeam(width, y, index, count) {
     depthTest: false,
     blending: THREE.AdditiveBlending,
   }));
-  glow.scale.set(beamWidth * 1.8, 0.7, 1);
+  glow.scale.set(beamWidth * 1.8 * beamLengthScale, 0.7, 1);
 
   const redShell = new THREE.Mesh(
-    new THREE.PlaneGeometry(beamWidth, 0.22),
+    new THREE.PlaneGeometry(beamWidth * beamLengthScale, 0.22),
     laserGateRedMaterial.clone(),
   );
   const whiteCore = new THREE.Mesh(
-    new THREE.PlaneGeometry(beamWidth * 0.92, 0.075),
+    new THREE.PlaneGeometry(beamWidth * 0.92 * beamLengthScale, 0.075),
     laserGateCoreMaterial.clone(),
   );
   redShell.position.z = 0.04;
@@ -6935,8 +7276,9 @@ function createLaserGateBeam(width, y, index, count) {
     whiteCore,
     crackle,
     cracklePositions,
-    width: beamWidth,
+    width: beamWidth * beamLengthScale,
     y,
+    angle: beamAngle,
     collisionHalfHeight: 0.16,
     index,
     phase: Math.random() * Math.PI * 2,
@@ -6950,10 +7292,11 @@ function createLaserGatewayVisual(width, height) {
   const frameWidth = Math.max(width, 1.15);
   const frameDepth = 0.3;
   const postWidth = 0.11;
+  const diagonalRise = frameWidth * 0.1;
 
   const leftPost = new THREE.Mesh(new THREE.BoxGeometry(postWidth, height, frameDepth), laserGateFrameMaterial);
   const rightPost = leftPost.clone();
-  leftPost.position.set(-frameWidth * 0.5, 0, -0.08);
+  leftPost.position.set(-frameWidth * 0.5, diagonalRise * 0.5, -0.08);
   rightPost.position.set(frameWidth * 0.5, 0, -0.08);
   group.add(leftPost, rightPost);
 
@@ -6963,7 +7306,7 @@ function createLaserGatewayVisual(width, height) {
   for (let index = 0; index < count; index += 1) {
     const amount = count === 1 ? 0.5 : index / (count - 1);
     const y = -usableHeight * 0.5 + amount * usableHeight;
-    const laser = createLaserGateBeam(frameWidth, y, index, count);
+    const laser = createLaserGateBeam(frameWidth, y, index, count, diagonalRise);
     group.add(laser.group);
     lasers.push(laser);
   }
@@ -7133,12 +7476,20 @@ function updateMultiplier(actionType, now = performance.now() / 1000) {
 
   if (!state.multiplierActions.has(actionType)) {
     state.multiplierActions.add(actionType);
-    state.multiplier = Math.min(
-      config.multiplierMax,
-      config.multiplierBase + state.multiplierActions.size * config.multiplierStep,
-    );
+    const actionMultiplier = config.multiplierBase + state.multiplierActions.size * config.multiplierStep;
+    state.multiplier = Math.min(config.multiplierMax, Math.max(state.multiplier, actionMultiplier));
     state.highestMultiplier = Math.max(state.highestMultiplier, state.multiplier);
   }
+  state.multiplierExpiresAt = now + config.multiplierWindow;
+}
+
+function addMultiplier(amount = 1, now = performance.now() / 1000) {
+  if (now > state.multiplierExpiresAt) {
+    state.multiplier = config.multiplierBase;
+    state.multiplierActions.clear();
+  }
+  state.multiplier = Math.min(config.multiplierMax, state.multiplier + amount);
+  state.highestMultiplier = Math.max(state.highestMultiplier, state.multiplier);
   state.multiplierExpiresAt = now + config.multiplierWindow;
 }
 
@@ -8021,6 +8372,10 @@ function reset({ resetLevelStats = false } = {}) {
   state.stuntBoostArmed = false;
   state.stuntBurstClockArmed = false;
   state.stuntBurstPulse = 0;
+  state.pullPhaseAmount = 0;
+  state.pullPhaseTarget = 0;
+  state.pullSwingRotation = 0;
+  state.pullSwingDirection = 0;
   state.crashExploding = false;
   state.crashExplosionStartedAt = -100;
   state.facing = 1;
@@ -8163,11 +8518,22 @@ function setupPanelToggle(panel, label) {
   panel.append(collapsedLabel, button);
 }
 
+function setPanelCollapsed(panel, collapsed) {
+  const button = panel?.querySelector(":scope > .panel-toggle");
+  const label = panel?.querySelector(":scope > .panel-collapsed-label")?.textContent ?? "panel";
+  if (!panel || !button) return;
+  panel.classList.toggle("panel-collapsed", collapsed);
+  button.setAttribute("aria-label", `${collapsed ? "Maximize" : "Minimize"} ${label}`);
+  button.setAttribute("title", `${collapsed ? "Maximize" : "Minimize"} ${label}`);
+  button.innerHTML = `<span data-lucide="${collapsed ? "maximize-2" : "minimize-2"}" aria-hidden="true"></span>`;
+  refreshLucideIcons();
+}
+
 function setupMajorPanelToggles() {
   setupPanelToggle(document.querySelector("#hud"), "HUD");
-  setupPanelToggle(document.querySelector("#controls"), "controls");
-  setupPanelToggle(gameZoomInput?.closest("#game-zoom-panel"), "zoom");
-  setupPanelToggle(editorPanel, "build tools");
+  setupPanelToggle(document.querySelector("#controls"), "Controls");
+  setupPanelToggle(gameZoomInput?.closest("#game-zoom-panel"), "Zoom");
+  setupPanelToggle(editorPanel, "Build Tools");
   refreshLucideIcons();
 }
 
@@ -8215,7 +8581,10 @@ function setPaused(paused) {
   buildTools.classList.toggle("hidden", !state.paused || Boolean(tweakPane));
   editorPane?.classList.toggle("hidden", !state.paused);
   applyBuildVisualMode(state.paused);
-  if (state.paused) updateBuildZoomControl();
+  if (state.paused) {
+    setPanelCollapsed(document.querySelector("#controls"), true);
+    updateBuildZoomControl();
+  }
   setEditorObjectSelected(state.selectedObject, Boolean(state.selectedObject));
   if (!state.paused) {
     selectEditorObject(null);
@@ -8239,22 +8608,16 @@ function setInspectFrozen(frozen, now = performance.now() / 1000) {
 }
 
 function applyBuildVisualMode(enabled) {
-  scene.fog = enabled ? null : gameplayFog;
-  for (const layerName of buildModeHiddenAtmosphereLayers) {
+  scene.fog = gameplayFog;
+  if (!buildModeLayerState.size) return;
+
+  for (const [layerName, wasEnabled] of buildModeLayerState.entries()) {
     const layer = parallaxLayers[layerName];
     if (!layer) continue;
-    if (enabled) {
-      if (!buildModeLayerState.has(layerName)) buildModeLayerState.set(layerName, layer.enabled);
-      layer.enabled = false;
-      layer.group.visible = false;
-    } else {
-      layer.enabled = buildModeLayerState.has(layerName)
-        ? buildModeLayerState.get(layerName)
-        : layer.enabled;
-      layer.group.visible = layer.enabled;
-      buildModeLayerState.delete(layerName);
-    }
+    layer.enabled = wasEnabled;
+    layer.group.visible = layer.enabled;
   }
+  buildModeLayerState.clear();
 }
 
 function getScoreRank(score, deaths) {
@@ -9058,6 +9421,9 @@ function releaseGrapple({ pop = false } = {}) {
   state.stuntTopOverArmed = false;
   state.stuntBoostArmed = false;
   state.stuntBurstClockArmed = false;
+  state.pullPhaseTarget = 0;
+  state.pullSwingRotation = 0;
+  state.pullSwingDirection = 0;
   ropeLine.visible = false;
   ropeMesh.visible = false;
   failedGrappleChainLine.visible = false;
@@ -9107,6 +9473,7 @@ function flourish(now) {
   state.flourishCompletionArmed = true;
   const baseTrickScore = twirl ? 7 : 5;
   if (isSlowMotionActive()) {
+    addMultiplier(1, now);
     addScore(baseTrickScore * 3, twirl ? "slow-twirl" : "slow-flourish", now);
   } else {
     addScore(baseTrickScore, twirl ? "twirl" : "flourish", now);
@@ -9141,7 +9508,7 @@ function updateInput(dt) {
   state.velocity.y += config.gravity * dt;
 }
 
-function updateStuntBoost(normal) {
+function updateStuntBoost(normal, dt = config.physicsStep) {
   if (!state.grappled || !state.anchor) return;
 
   const angle = Math.atan2(normal.y, normal.x);
@@ -9152,6 +9519,8 @@ function updateStuntBoost(normal) {
     state.stuntTopOverArmed = false;
     state.stuntBoostArmed = false;
     state.stuntBurstClockArmed = false;
+    state.pullSwingRotation = 0;
+    state.pullSwingDirection = 0;
   }
 
   let angleDelta = angle - state.stuntLastAngle;
@@ -9159,6 +9528,15 @@ function updateStuntBoost(normal) {
   if (angleDelta < -Math.PI) angleDelta += Math.PI * 2;
   state.stuntLastAngle = angle;
   state.stuntRotation += angleDelta;
+  state.pullSwingDirection = angleDelta;
+  if (angleDelta >= 0) {
+    state.pullSwingRotation += angleDelta;
+  } else {
+    state.pullSwingRotation = Math.max(0, state.pullSwingRotation + angleDelta * 0.45);
+  }
+  state.pullPhaseTarget = state.facing > 0 && state.pullSwingDirection > 0.0005 && state.pullSwingRotation >= THREE.MathUtils.degToRad(300)
+    ? 1
+    : 0;
 
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
   const isTopOver =
@@ -9294,7 +9672,7 @@ function updateGrapple(dt) {
     state.velocity.multiplyScalar(config.ropeDamping);
   }
 
-  updateStuntBoost(normal);
+  updateStuntBoost(normal, dt);
 }
 
 function updatePlayer(dt, now) {
@@ -10790,6 +11168,7 @@ function tick(time) {
 
 window.addEventListener("resize", resize);
 window.addEventListener("selectstart", (event) => {
+  if (event.target?.closest?.("input, textarea, select, #level-complete")) return;
   event.preventDefault();
   window.getSelection()?.removeAllRanges();
 }, { passive: false });
@@ -10802,7 +11181,9 @@ gameShell.addEventListener("touchend", suppressNativeTouch, { passive: false, ca
 gameShell.addEventListener("touchcancel", suppressNativeTouch, { passive: false, capture: true });
 
 function isEditableKeyTarget(target) {
-  if (!(target instanceof Element)) return false;
+  if (target === leaderboardInitialsInput) return true;
+  if (target?.closest?.("#level-complete")) return true;
+  if (!target?.tagName) return false;
   const tagName = target.tagName.toLowerCase();
   return (
     target.isContentEditable ||
@@ -10937,10 +11318,17 @@ if (sfxVolumeInput) {
   sfxVolumeInput.addEventListener("input", () => setSfxVolume(sfxVolumeInput.value));
 }
 if (leaderboardInitialsInput) {
+  leaderboardInitialsInput.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+  leaderboardInitialsInput.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
   leaderboardInitialsInput.addEventListener("input", () => {
     leaderboardInitialsInput.value = normalizeLeaderboardInitials(leaderboardInitialsInput.value).trimEnd();
   });
   leaderboardInitialsInput.addEventListener("keydown", (event) => {
+    event.stopPropagation();
     if (event.key !== "Enter") return;
     event.preventDefault();
     submitLeaderboardEntry();

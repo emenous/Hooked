@@ -564,6 +564,14 @@ strong {
   cursor: pointer;
 }
 
+#editor-pane .tp-rotv_b:hover,
+#editor-pane .tp-fldv_b:hover {
+  border-color: rgba(228, 242, 75, 0.48);
+  background:
+    linear-gradient(180deg, rgba(228, 242, 75, 0.16), rgba(35, 231, 255, 0.08)),
+    rgba(8, 20, 20, 0.9);
+}
+
 #editor-pane .tp-rotv_b::before,
 #editor-pane .tp-fldv_b::before {
   content: "▸";
@@ -583,6 +591,32 @@ strong {
 #editor-pane .tp-fldv-expanded > .tp-fldv_b::before {
   content: "▾";
   color: #e4f24b;
+}
+
+#editor-pane .tp-fldv-expanded > .tp-fldv_b {
+  position: relative;
+  border-color: rgba(228, 242, 75, 0.78);
+  background:
+    linear-gradient(180deg, rgba(228, 242, 75, 0.24), rgba(35, 231, 255, 0.12)),
+    rgba(10, 25, 24, 0.96);
+  box-shadow:
+    inset 4px 0 0 #e4f24b,
+    0 0 0 1px rgba(228, 242, 75, 0.14),
+    0 10px 26px rgba(228, 242, 75, 0.1);
+  color: #ffffff;
+}
+
+#editor-pane .tp-fldv-expanded > .tp-fldv_b::after {
+  content: "ACTIVE";
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid rgba(228, 242, 75, 0.55);
+  border-radius: 5px;
+  background: rgba(228, 242, 75, 0.16);
+  color: #f5ff65;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0;
 }
 
 #editor-pane .tp-fldv {
