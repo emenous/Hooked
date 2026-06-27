@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-120";
+import { createCharacterController } from "./characterController.js?v=version-0-5-122";
 
-const GAME_VERSION = "v0.5.120";
+const GAME_VERSION = "v0.5.122";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -1020,6 +1020,16 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setPixelRatio(1);
 renderer.setClearColor(0x21172c, 1);
 
+const layerCompositeScene = new THREE.Scene();
+const layerCompositeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const layerCompositeGeometry = new THREE.PlaneGeometry(2, 2);
+const layerCompositeState = {
+  width: 0,
+  height: 0,
+  targets: new Map(),
+  quads: new Map(),
+};
+
 const light = new THREE.DirectionalLight(0xffffff, 3.0);
 light.position.set(8, 18, 18);
 scene.add(light);
@@ -1381,6 +1391,11 @@ function getObjectLayerKey(object) {
   return object?.layerKey ?? object?.mesh?.userData?.editorLayerKey ?? object?.group?.userData?.editorLayerKey ?? "playarea";
 }
 
+function clampUnitValue(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? THREE.MathUtils.clamp(numeric, 0, 1) : fallback;
+}
+
 function markObjectSceneLayer(object, layerKey) {
   if (!object) return;
   const layer = getSceneLayer(layerKey);
@@ -1441,7 +1456,7 @@ function setLayerVisibility(layerKey, visible) {
 }
 
 function setLayerOpacity(layerKey, opacity) {
-  const layerOpacity = THREE.MathUtils.clamp(Number(opacity), 0, 1);
+  const layerOpacity = clampUnitValue(opacity, 1);
   getSceneLayer(layerKey).group.traverse((node) => {
     const materials = Array.isArray(node.material) ? node.material : node.material ? [node.material] : [];
     materials.forEach((material) => {
@@ -1452,70 +1467,21 @@ function setLayerOpacity(layerKey, opacity) {
   });
 }
 
-function patchLayerEffectMaterial(material) {
-  if (!material || material.userData.layerEffectPatched) return;
-  const previousOnBeforeCompile = material.onBeforeCompile;
-  material.userData.layerEffectPatched = true;
-  material.userData.layerEffectUniforms = {
-    uLayerBlurAmount: { value: 0 },
-    uLayerPixelAmount: { value: 0 },
-  };
-  material.onBeforeCompile = (shader, renderer) => {
-    previousOnBeforeCompile?.(shader, renderer);
-    shader.uniforms.uLayerBlurAmount = material.userData.layerEffectUniforms.uLayerBlurAmount;
-    shader.uniforms.uLayerPixelAmount = material.userData.layerEffectUniforms.uLayerPixelAmount;
-    shader.vertexShader = shader.vertexShader.replace(
-      "#include <project_vertex>",
-      `
-vec4 mvPosition = vec4(transformed, 1.0);
-#ifdef USE_BATCHING
-  mvPosition = batchingMatrix * mvPosition;
-#endif
-#ifdef USE_INSTANCING
-  mvPosition = instanceMatrix * mvPosition;
-#endif
-mvPosition = modelViewMatrix * mvPosition;
-if (uLayerBlurAmount > 0.001) {
-  vec2 blurDir = length(mvPosition.xy) > 0.0001 ? normalize(mvPosition.xy) : vec2(1.0, 0.0);
-  mvPosition.xy += blurDir * uLayerBlurAmount * 0.035;
-}
-gl_Position = projectionMatrix * mvPosition;
-if (uLayerPixelAmount > 0.001) {
-  float grid = mix(900.0, 90.0, clamp(uLayerPixelAmount, 0.0, 1.0));
-  vec2 ndc = gl_Position.xy / max(gl_Position.w, 0.0001);
-  vec2 snapped = floor(ndc * grid + 0.5) / grid;
-  gl_Position.xy = mix(gl_Position.xy, snapped * gl_Position.w, uLayerPixelAmount);
-}
-`,
-    );
-  };
-  material.needsUpdate = true;
-}
-
 function applyLayerEffects(layerKey) {
   const layer = getSceneLayer(layerKey);
-  const blurAmount = THREE.MathUtils.clamp(Number(editorUi[layer.blurKey] ?? 0), 0, 1);
-  const pixelAmount = THREE.MathUtils.clamp(Number(editorUi[layer.pixelKey] ?? 0), 0, 1);
-  layer.group.traverse((node) => {
-    const materials = Array.isArray(node.material) ? node.material : node.material ? [node.material] : [];
-    materials.forEach((material) => {
-      if (!material.userData.layerEffectPatched && blurAmount <= 0.001 && pixelAmount <= 0.001) return;
-      patchLayerEffectMaterial(material);
-      material.userData.layerEffectUniforms.uLayerBlurAmount.value = blurAmount;
-      material.userData.layerEffectUniforms.uLayerPixelAmount.value = pixelAmount;
-    });
-  });
+  layer.blurAmount = clampUnitValue(editorUi[layer.blurKey], 0);
+  layer.pixelAmount = clampUnitValue(editorUi[layer.pixelKey], 0);
 }
 
 function setLayerBlur(layerKey, value) {
   const layer = getSceneLayer(layerKey);
-  editorUi[layer.blurKey] = THREE.MathUtils.clamp(Number(value), 0, 1);
+  editorUi[layer.blurKey] = clampUnitValue(value, editorUi[layer.blurKey] ?? 0);
   applyLayerEffects(layerKey);
 }
 
 function setLayerPixel(layerKey, value) {
   const layer = getSceneLayer(layerKey);
-  editorUi[layer.pixelKey] = THREE.MathUtils.clamp(Number(value), 0, 1);
+  editorUi[layer.pixelKey] = clampUnitValue(value, editorUi[layer.pixelKey] ?? 0);
   applyLayerEffects(layerKey);
 }
 
@@ -1524,9 +1490,9 @@ function getLayerSettingsJson() {
   for (const [layerKey, layer] of Object.entries(sceneLayers)) {
     layers[layerKey] = {
       visible: Boolean(editorUi[layer.visibleKey]),
-      opacity: Number(editorUi[layer.opacityKey] ?? 1),
-      blur: Number(editorUi[layer.blurKey] ?? 0),
-      pixel: Number(editorUi[layer.pixelKey] ?? 0),
+      opacity: clampUnitValue(editorUi[layer.opacityKey], 1),
+      blur: clampUnitValue(editorUi[layer.blurKey], 0),
+      pixel: clampUnitValue(editorUi[layer.pixelKey], 0),
     };
   }
   return {
@@ -1546,6 +1512,150 @@ function saveLayerSettingsJson() {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function createLayerCompositeMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      tDiffuse: { value: null },
+      uResolution: { value: new THREE.Vector2(1, 1) },
+      uBlurAmount: { value: 0 },
+      uPixelAmount: { value: 0 },
+    },
+    vertexShader: `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`,
+    fragmentShader: `
+uniform sampler2D tDiffuse;
+uniform vec2 uResolution;
+uniform float uBlurAmount;
+uniform float uPixelAmount;
+varying vec2 vUv;
+
+vec4 readLayer(vec2 uv) {
+  vec2 sampledUv = uv;
+  if (uPixelAmount > 0.001) {
+    vec2 pixelSize = mix(vec2(1.0), vec2(18.0), clamp(uPixelAmount, 0.0, 1.0));
+    vec2 grid = max(vec2(1.0), uResolution / pixelSize);
+    sampledUv = (floor(sampledUv * grid) + 0.5) / grid;
+  }
+  return texture2D(tDiffuse, clamp(sampledUv, vec2(0.0), vec2(1.0)));
+}
+
+void main() {
+  float blur = clamp(uBlurAmount, 0.0, 1.0);
+  vec2 texel = 1.0 / max(uResolution, vec2(1.0));
+  vec2 radius = texel * mix(0.0, 9.0, blur);
+  vec4 color = readLayer(vUv) * 0.36;
+  color += readLayer(vUv + vec2(radius.x, 0.0)) * 0.12;
+  color += readLayer(vUv - vec2(radius.x, 0.0)) * 0.12;
+  color += readLayer(vUv + vec2(0.0, radius.y)) * 0.12;
+  color += readLayer(vUv - vec2(0.0, radius.y)) * 0.12;
+  color += readLayer(vUv + radius) * 0.04;
+  color += readLayer(vUv - radius) * 0.04;
+  color += readLayer(vUv + vec2(radius.x, -radius.y)) * 0.04;
+  color += readLayer(vUv + vec2(-radius.x, radius.y)) * 0.04;
+  gl_FragColor = color;
+}
+`,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.NormalBlending,
+  });
+}
+
+function ensureLayerCompositeTargets(width, height) {
+  if (layerCompositeState.width === width && layerCompositeState.height === height) return;
+  layerCompositeState.width = width;
+  layerCompositeState.height = height;
+  for (const target of layerCompositeState.targets.values()) target.setSize(width, height);
+  for (const quad of layerCompositeState.quads.values()) {
+    quad.material.uniforms.uResolution.value.set(width, height);
+  }
+}
+
+function getLayerCompositeTarget(layerKey) {
+  if (!layerCompositeState.targets.has(layerKey)) {
+    const target = new THREE.WebGLRenderTarget(
+      Math.max(1, layerCompositeState.width),
+      Math.max(1, layerCompositeState.height),
+      {
+        depthBuffer: true,
+        stencilBuffer: false,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+      },
+    );
+    target.texture.name = `${layerKey}CompositeTexture`;
+    target.texture.colorSpace = THREE.SRGBColorSpace;
+    layerCompositeState.targets.set(layerKey, target);
+  }
+  return layerCompositeState.targets.get(layerKey);
+}
+
+function getLayerCompositeQuad(layerKey) {
+  if (!layerCompositeState.quads.has(layerKey)) {
+    const material = createLayerCompositeMaterial();
+    const quad = new THREE.Mesh(layerCompositeGeometry, material);
+    quad.name = `${layerKey}CompositeQuad`;
+    quad.frustumCulled = false;
+    layerCompositeScene.add(quad);
+    layerCompositeState.quads.set(layerKey, quad);
+  }
+  return layerCompositeState.quads.get(layerKey);
+}
+
+function hasActiveLayerEffects() {
+  return Object.values(sceneLayers).some((layer) => (layer.blurAmount ?? 0) > 0.001 || (layer.pixelAmount ?? 0) > 0.001);
+}
+
+function renderSceneWithLayerEffects() {
+  const width = Math.max(1, canvas.width);
+  const height = Math.max(1, canvas.height);
+  ensureLayerCompositeTargets(width, height);
+
+  const layerEntries = Object.entries(sceneLayers);
+  const previousLayerVisibility = new Map(layerEntries.map(([layerKey, layer]) => [layerKey, layer.group.visible]));
+  const previousClearColor = renderer.getClearColor(new THREE.Color());
+  const previousClearAlpha = renderer.getClearAlpha();
+  const previousAutoClear = renderer.autoClear;
+
+  renderer.autoClear = true;
+  renderer.setClearColor(0x000000, 0);
+  for (const [, layer] of layerEntries) layer.group.visible = false;
+
+  for (const [layerKey, layer] of layerEntries) {
+    const target = getLayerCompositeTarget(layerKey);
+    layer.group.visible = Boolean(previousLayerVisibility.get(layerKey));
+    renderer.setRenderTarget(target);
+    renderer.clear(true, true, true);
+    renderer.render(scene, camera);
+    layer.group.visible = false;
+  }
+
+  for (const [layerKey, layer] of layerEntries) {
+    layer.group.visible = Boolean(previousLayerVisibility.get(layerKey));
+    const quad = getLayerCompositeQuad(layerKey);
+    quad.visible = true;
+    quad.material.uniforms.tDiffuse.value = getLayerCompositeTarget(layerKey).texture;
+    quad.material.uniforms.uBlurAmount.value = layer.blurAmount ?? 0;
+    quad.material.uniforms.uPixelAmount.value = layer.pixelAmount ?? 0;
+  }
+
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(0x21172c, 1);
+  renderer.clear(true, true, true);
+  renderer.render(layerCompositeScene, layerCompositeCamera);
+
+  for (const quad of layerCompositeState.quads.values()) quad.visible = false;
+  renderer.setClearColor(previousClearColor, previousClearAlpha);
+  renderer.autoClear = previousAutoClear;
 }
 
 function mergeEditableObjectsInLayer(layerKey = editorUi.layerTarget) {
@@ -11161,7 +11271,11 @@ function tick(time) {
   updateMotionTrail();
   updateSpeedLines(now);
   updateHud(now);
-  renderer.render(scene, camera);
+  if (hasActiveLayerEffects()) {
+    renderSceneWithLayerEffects();
+  } else {
+    renderer.render(scene, camera);
+  }
   recordPerformanceSample(rawFrameMs, performance.now() - tickStartedAt, liveNow);
   requestAnimationFrame(tick);
 }
