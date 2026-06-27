@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Hooked Prototype</title>
     <link rel="stylesheet" href="https://ka-f.webawesome.com/releases/v3.9.0/styles/themes/default.css" />
-    <link rel="stylesheet" href="./src/styles.css?v=version-0-5-104" />
+    <link rel="stylesheet" href="./src/styles.css?v=version-0-5-118" />
     <script type="module" src="https://ka-f.webawesome.com/releases/v3.9.0/webawesome.loader.js"></script>
     <script defer src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   </head>
@@ -157,10 +157,31 @@
             <dd id="complete-rank">D</dd>
           </div>
         </dl>
+        <section id="leaderboard-entry" class="leaderboard-entry hidden" aria-label="Leaderboard entry">
+          <p>New High Score</p>
+          <label>
+            <span>Initials</span>
+            <input id="leaderboard-initials" type="text" inputmode="latin" maxlength="3" autocomplete="off" spellcheck="false" value="AAA" />
+          </label>
+          <button id="leaderboard-save" type="button">Save</button>
+        </section>
+        <section class="leaderboard-board" aria-label="Top scores">
+          <h2>Top Scores</h2>
+          <ol id="leaderboard-list"></ol>
+        </section>
         <button id="next-level" type="button"><span data-lucide="arrow-right" aria-hidden="true"></span><span>Next Level</span></button>
       </section>
       <p id="game-version" aria-label="Current version"></p>
       <p id="performance-monitor" aria-label="Performance monitor"></p>
+      <div id="axis-gizmo" aria-label="World axis gizmo">
+        <span class="axis-gizmo__line axis-gizmo__line--x"></span>
+        <span class="axis-gizmo__line axis-gizmo__line--y"></span>
+        <span class="axis-gizmo__line axis-gizmo__line--z"></span>
+        <span class="axis-gizmo__label axis-gizmo__label--x">X</span>
+        <span class="axis-gizmo__label axis-gizmo__label--y">Y</span>
+        <span class="axis-gizmo__label axis-gizmo__label--z">Z</span>
+        <span class="axis-gizmo__origin"></span>
+      </div>
       <button id="restart" type="button" aria-label="Restart"><span data-lucide="rotate-ccw" aria-hidden="true"></span><span>Restart</span></button>
     </main>
 
@@ -171,6 +192,6 @@
       }
     }
   </script>
-  <script type="module" src="./src/main.js?v=version-0-5-104"></script>
+  <script type="module" src="./src/main.js?v=version-0-5-118"></script>
   </body>
 </html>

@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-104";
+import { createCharacterController } from "./characterController.js?v=version-0-5-118";
 
-const GAME_VERSION = "v0.5.104";
+const GAME_VERSION = "v0.5.118";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -56,6 +56,10 @@ const completeMultiplierEl = document.querySelector("#complete-multiplier");
 const completeFlipsEl = document.querySelector("#complete-flips");
 const completeScoreEl = document.querySelector("#complete-score");
 const completeRankEl = document.querySelector("#complete-rank");
+const leaderboardEntryEl = document.querySelector("#leaderboard-entry");
+const leaderboardInitialsInput = document.querySelector("#leaderboard-initials");
+const leaderboardSaveButton = document.querySelector("#leaderboard-save");
+const leaderboardListEl = document.querySelector("#leaderboard-list");
 const nextLevelButton = document.querySelector("#next-level");
 const gameVersionEl = document.querySelector("#game-version");
 const performanceMonitorEl = document.querySelector("#performance-monitor");
@@ -63,6 +67,10 @@ const jeremyFireworksEl = document.querySelector("#jeremy-fireworks");
 const anchorStorageKey = "hooked.anchor.layout.v5";
 const editorLayoutStorageKey = "hooked.editor.layout.v1";
 const editorLayoutStoragePrefix = "hooked.editor.layout.v2.";
+const leaderboardStorageKey = "hooked.leaderboard.v1";
+const leaderboardMaxEntries = 10;
+const scratchTrackA = new THREE.Vector2();
+const scratchTrackB = new THREE.Vector2();
 
 const config = {
   gravity: -33,
@@ -201,7 +209,18 @@ const config = {
   multiplierMax: 4,
   crashExplosionPieces: 12,
   crashExplosionDuration: 0.92,
-  foregroundBlurScale: 1,
+  foregroundBlurScale: 1.85,
+  foregroundBaseBlurScale: 1.6,
+  foregroundPowerlineBlurScale: 1.8,
+  foregroundMaxScreenHeightRatio: 0.5,
+  elevatedTrainSpeed: 18,
+  elevatedTrainWrapWidth: 142,
+  elevatedTrackSpan: 150,
+  elevatedTrackPoints: 17,
+  foregroundDepthBlurMin: 1.18,
+  foregroundDepthBlurMax: 2.35,
+  rightFacingClockwiseLegCounterDegrees: 60,
+  leftFacingLeftLegMotionScale: 0.42,
   debugShowDroneAnchors: false,
   debugGlbNeutralOnly: false,
   useGlbCharacter: true,
@@ -212,6 +231,8 @@ const config = {
   stableGrappleSocketX: 0.14,
   stableGrappleSocketY: 0.5,
   stableGrappleSocketDrift: 0.08,
+  leftCatchAlignmentMinError: 0.035,
+  leftCatchAlignmentMaxSlide: 0.55,
   useRestRelativeGlbPose: true,
   glbPoseSmoothing: 18,
   characterRimColor: 0xffd21f,
@@ -342,6 +363,7 @@ const state = {
   highestMultiplier: 1,
   fastestSpeed: 0,
   completedFlips: 0,
+  pendingLeaderboardEntry: null,
   nextScoreX: 16,
   gameOver: false,
   finished: false,
@@ -564,9 +586,10 @@ const sfx = (() => {
     }
   }
 
-  function unlock() {
+function unlock() {
     const audio = getContext();
-    if (audio.state === "suspended") audio.resume();
+    if (audio.state === "suspended") return audio.resume().catch(() => {});
+    return Promise.resolve();
   }
 
   function getNoiseBuffer() {
@@ -680,6 +703,62 @@ const sfx = (() => {
       tone({ start: now + 0.035, type: "triangle", frequency: 220, endFrequency: 165, duration: 0.2, gain: 0.06 + punch * 0.04, filter: { frequency: 900, q: 0.8 } });
       noise({ start: now, duration: 0.1, gain: 0.1 + punch * 0.06, filter: 1450, type: "bandpass" });
     },
+    anchorNote(anchorIndex = 0, speed = 0) {
+      if (!canPlay(`anchorNote-${anchorIndex}`, 0.06)) return;
+      const now = getContext().currentTime + 0.034;
+      const darkSynthwavePattern = [
+        110.0,
+        146.83,
+        164.81,
+        196.0,
+        220.0,
+        246.94,
+        293.66,
+        329.63,
+        392.0,
+        329.63,
+        293.66,
+        246.94,
+        220.0,
+        196.0,
+        164.81,
+        146.83,
+      ];
+      const noteIndex = Math.abs(Math.floor(anchorIndex)) % darkSynthwavePattern.length;
+      const phrase = Math.floor(Math.abs(anchorIndex) / darkSynthwavePattern.length) % 3;
+      const frequency = darkSynthwavePattern[noteIndex] * (phrase === 2 ? 2 : phrase === 1 ? 1.5 : 1);
+      const punch = THREE.MathUtils.clamp(speed / 22, 0, 1);
+      const type = noteIndex % 4 === 0 ? "square" : "sawtooth";
+      tone({
+        start: now,
+        type,
+        frequency,
+        endFrequency: frequency * (0.995 + punch * 0.004),
+        duration: 0.26 + punch * 0.08,
+        gain: 0.14 + punch * 0.07,
+        attack: 0.004,
+        release: 0.11,
+        filter: { type: "lowpass", frequency: 860 + (noteIndex % 5) * 95 + punch * 320, q: 1.18 },
+      });
+      tone({
+        start: now + 0.042,
+        type: "sine",
+        frequency: frequency * 2.01,
+        endFrequency: frequency * 1.995,
+        duration: 0.18,
+        gain: 0.035 + punch * 0.024,
+        release: 0.08,
+      });
+      tone({
+        start: now + 0.084,
+        type: "triangle",
+        frequency: frequency * (noteIndex % 2 ? 1.2 : 1.25),
+        endFrequency: frequency * (noteIndex % 2 ? 1.19 : 1.24),
+        duration: 0.14,
+        gain: 0.028 + punch * 0.016,
+        filter: { type: "bandpass", frequency: 1250, q: 0.9 },
+      });
+    },
     release() {
       if (!canPlay("release", 0.08)) return;
       const now = getContext().currentTime;
@@ -747,8 +826,14 @@ const sfx = (() => {
   function play(name, ...args) {
     if (!sounds[name]) return;
     try {
-      unlock();
-      if (!settings.sfxMuted && settings.sfxVolume > 0) sounds[name](...args);
+      const audio = getContext();
+      if (audio.state === "suspended") {
+        unlock().then(() => {
+          if (!settings.sfxMuted && settings.sfxVolume > 0 && !settings.masterMuted) sounds[name](...args);
+        });
+        return;
+      }
+      if (!settings.sfxMuted && settings.sfxVolume > 0 && !settings.masterMuted) sounds[name](...args);
     } catch {
       // Audio should never interrupt gameplay.
     }
@@ -925,6 +1010,46 @@ function wrapCentered(value, width) {
   return ((value + width * 0.5) % width + width) % width - width * 0.5;
 }
 
+function getVisibleWorldHeight(distance = camera.position.z) {
+  return Math.max(1, 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5) * Math.max(1, distance));
+}
+
+function getForegroundMaxWorldHeight() {
+  return getVisibleWorldHeight() * config.foregroundMaxScreenHeightRatio;
+}
+
+function capObjectHeightToScreen(object, maxHeight = getForegroundMaxWorldHeight()) {
+  const box = new THREE.Box3().setFromObject(object);
+  const height = box.max.y - box.min.y;
+  if (!Number.isFinite(height) || height <= maxHeight || height <= 0) return 1;
+  const scale = maxHeight / height;
+  object.scale.y *= scale;
+  object.userData.screenHeightCap = scale;
+  return scale;
+}
+
+function applyForegroundRandomScaleAndBlur(object, index, seed = 0) {
+  const widthScale = seededRange(seed + index * 5.7, 0.8, 1.3);
+  const heightScale = seededRange(seed + index * 8.9, 0.8, 1.3);
+  object.scale.x *= widthScale;
+  object.scale.y *= heightScale;
+
+  const depth = seededRange(seed + index * 13.1, 0, 1);
+  const blurScale = THREE.MathUtils.lerp(
+    config.foregroundDepthBlurMin,
+    config.foregroundDepthBlurMax,
+    depth,
+  );
+  object.userData.foregroundDepth = depth;
+  object.traverse((child) => {
+    if (!child.isMesh || !child.userData.foregroundBlur) return;
+    child.scale.x *= blurScale;
+    child.scale.y *= blurScale;
+  });
+  capObjectHeightToScreen(object);
+  return object;
+}
+
 class ParallaxLayer {
   constructor({
     name,
@@ -1043,6 +1168,16 @@ const parallaxLayers = {
     layerName: "backgroundLayer",
     renderOrder: 4,
   }),
+  alleyWall: new ParallaxLayer({
+    name: "alleyWall",
+    z: -38,
+    speedMultiplier: 0.1,
+    verticalMultiplier: 0.04,
+    wrapWidth: 118,
+    parent: backgroundLayer,
+    layerName: "backgroundLayer",
+    renderOrder: 5,
+  }),
   farSkyline: new ParallaxLayer({
     name: "farSkyline",
     z: -34,
@@ -1065,6 +1200,28 @@ const parallaxLayers = {
     renderOrder: 13,
     enabled: false,
   }),
+  elevatedTracks: new ParallaxLayer({
+    name: "elevatedTracks",
+    z: -18,
+    speedMultiplier: 0.28,
+    verticalMultiplier: 0.08,
+    wrapWidth: 190,
+    parent: midgroundLayer,
+    layerName: "midgroundLayer",
+    renderOrder: 14,
+    enabled: true,
+  }),
+  alleyFloor: new ParallaxLayer({
+    name: "alleyFloor",
+    z: -14,
+    speedMultiplier: 0.38,
+    verticalMultiplier: 0.08,
+    wrapWidth: 104,
+    parent: midgroundLayer,
+    layerName: "midgroundLayer",
+    renderOrder: 15,
+    enabled: true,
+  }),
   foreground: new ParallaxLayer({
     name: "foreground",
     z: 14,
@@ -1074,7 +1231,7 @@ const parallaxLayers = {
     parent: foregroundLayer,
     layerName: "foregroundLayer",
     renderOrder: 42,
-    enabled: false,
+    enabled: true,
   }),
   foregroundBase: new ParallaxLayer({
     name: "foregroundBase",
@@ -1085,7 +1242,7 @@ const parallaxLayers = {
     parent: foregroundLayer,
     layerName: "foregroundLayer",
     renderOrder: 41,
-    enabled: false,
+    enabled: true,
   }),
   foregroundPowerlines: new ParallaxLayer({
     name: "foregroundPowerlines",
@@ -1115,7 +1272,10 @@ const parallaxLayers = {
 const buildModeHiddenAtmosphereLayers = [
   "distantClouds",
   "nearClouds",
+  "alleyWall",
   "edgeHaze",
+  "elevatedTracks",
+  "alleyFloor",
   "foreground",
   "foregroundBase",
   "foregroundPowerlines",
@@ -1221,7 +1381,9 @@ window.HookedDebug = {
   },
   setForegroundBlur(value) {
     config.foregroundBlurScale = value;
-    for (const layerName of ["foreground", "foregroundBase"]) {
+    config.foregroundBaseBlurScale = Math.max(0.5, value * 0.86);
+    config.foregroundPowerlineBlurScale = Math.max(0.5, value * 0.97);
+    for (const layerName of ["foreground", "foregroundBase", "foregroundPowerlines"]) {
       const layer = parallaxLayers[layerName];
       if (!layer) continue;
       for (const object of layer.items) {
@@ -1384,7 +1546,6 @@ function createSunsetSkyTexture() {
   const hazeBands = [
     ["rgba(225, 111, 44, 0.22)", 150, 35, 210, 18],
     ["rgba(198, 72, 40, 0.2)", 260, 96, 300, 24],
-    ["rgba(116, 43, 92, 0.28)", 110, 74, 250, 18],
     ["rgba(240, 166, 76, 0.12)", 36, 122, 170, 16],
     ["rgba(30, 22, 42, 0.54)", 320, 28, 180, 20],
   ];
@@ -1560,13 +1721,15 @@ function createForegroundProp(kind) {
   const group = new THREE.Group();
   const material = new THREE.MeshBasicMaterial({
     color: 0x000000,
-    transparent: false,
+    transparent: true,
+    opacity: 1,
     depthWrite: false,
     depthTest: false,
   });
   const blurMaterial = new THREE.MeshBasicMaterial({
     color: 0x000000,
-    transparent: false,
+    transparent: true,
+    opacity: 1,
     depthWrite: false,
     depthTest: false,
   });
@@ -1624,6 +1787,52 @@ function addWireSegment(group, start, end, material, thickness = 0.055, z = 0) {
   return segment;
 }
 
+function addTrackSegment(group, start, end, material, thickness = 0.08, z = 0) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0.001) return null;
+
+  const segment = new THREE.Mesh(new THREE.BoxGeometry(length, thickness, 0.1), material);
+  segment.position.set((start.x + end.x) * 0.5, (start.y + end.y) * 0.5, z);
+  segment.rotation.z = Math.atan2(dy, dx);
+  group.add(segment);
+  return segment;
+}
+
+function makeElevatedTrackSpine(seed = 0, span = config.elevatedTrackSpan, count = config.elevatedTrackPoints) {
+  const points = [];
+  for (let index = 0; index < count; index += 1) {
+    const t = index / Math.max(1, count - 1);
+    const x = -span * 0.5 + t * span;
+    const y =
+      8.25 +
+      Math.sin(t * Math.PI * 2.25 + seed * 0.7) * 0.26 +
+      Math.sin(t * Math.PI * 5.1 + seed * 1.9) * 0.11 +
+      seededRange(seed + index * 3.1, -0.14, 0.14);
+    points.push(new THREE.Vector2(x, y));
+  }
+  return points;
+}
+
+function getPointOnPolyline(points, t, target = new THREE.Vector2()) {
+  if (!points.length) return target.set(0, 0);
+  if (points.length === 1) return target.copy(points[0]);
+  const clamped = ((t % 1) + 1) % 1;
+  const scaled = clamped * (points.length - 1);
+  const index = Math.min(points.length - 2, Math.floor(scaled));
+  const localT = scaled - index;
+  return target.lerpVectors(points[index], points[index + 1], localT);
+}
+
+function getTangentOnPolyline(points, t, target = new THREE.Vector2()) {
+  if (points.length < 2) return target.set(1, 0);
+  const clamped = ((t % 1) + 1) % 1;
+  const scaled = clamped * (points.length - 1);
+  const index = Math.min(points.length - 2, Math.floor(scaled));
+  return target.subVectors(points[index + 1], points[index]).normalize();
+}
+
 function addSaggingWire(group, startX, endX, startY, endY, sag, material, thickness, z) {
   const segments = 15;
   let previous = new THREE.Vector2(startX, startY);
@@ -1665,21 +1874,22 @@ function createPowerlineRun(index) {
 
   const black = new THREE.MeshBasicMaterial({
     color: 0x020403,
-    transparent: false,
+    transparent: true,
+    opacity: 1,
     depthWrite: false,
     depthTest: false,
   });
   const soft = new THREE.MeshBasicMaterial({
     color: 0x020403,
     transparent: true,
-    opacity: 0.3,
+    opacity: 1,
     depthWrite: false,
     depthTest: false,
   });
   const cap = new THREE.MeshBasicMaterial({
     color: 0x07100f,
     transparent: true,
-    opacity: 0.96,
+    opacity: 1,
     depthWrite: false,
     depthTest: false,
   });
@@ -1751,13 +1961,354 @@ function createPowerlineRun(index) {
   addBrushGrass(group, 38 * widthScale, baseY - 0.18, black, index * 13);
 
   group.traverse((child) => {
+    if (child.isMesh) {
+      child.userData.foregroundBlur = true;
+      child.scale.multiplyScalar(config.foregroundPowerlineBlurScale);
+    }
     if (child.material) {
       child.material.depthTest = false;
       child.material.depthWrite = false;
     }
-    child.userData.foregroundBlur = child.material === soft;
   });
 
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.userData.foregroundBlur = true;
+    child.scale.multiplyScalar(config.foregroundBlurScale);
+  });
+  capObjectHeightToScreen(group);
+  return group;
+}
+
+function createElevatedTrain(index, direction = -1) {
+  const train = new THREE.Group();
+  train.name = `elevatedTrain_${index}`;
+  train.userData.trainT = index % 2 ? 0.34 : 0.82;
+  train.userData.trainDirection = direction;
+  train.userData.trainSpeed = config.elevatedTrainSpeed * (0.92 + (index % 3) * 0.08) / config.elevatedTrackSpan;
+  train.userData.trainWrapWidth = config.elevatedTrainWrapWidth;
+  train.userData.isElevatedTrain = true;
+  train.userData.carOffsets = [-0.055, 0, 0.055];
+
+  const bodyMaterial = new THREE.MeshBasicMaterial({
+    color: 0x130f18,
+    transparent: true,
+    opacity: 0.78,
+    depthWrite: false,
+  });
+  const edgeMaterial = new THREE.MeshBasicMaterial({
+    color: 0x2a222a,
+    transparent: true,
+    opacity: 0.7,
+    depthWrite: false,
+  });
+  const windowMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffbd60,
+    transparent: true,
+    opacity: 0.84,
+    depthWrite: false,
+  });
+  const glowMaterial = new THREE.MeshBasicMaterial({
+    color: 0xe08b3a,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  for (let car = 0; car < 3; car += 1) {
+    const carGroup = new THREE.Group();
+    carGroup.userData.carIndex = car;
+    carGroup.userData.carTOffset = train.userData.carOffsets[car];
+
+    const glow = new THREE.Mesh(new THREE.PlaneGeometry(5.9, 1.04), glowMaterial);
+    glow.position.set(0, 0, -0.05);
+    carGroup.add(glow);
+
+    const body = new THREE.Mesh(new THREE.BoxGeometry(5.45, 0.74, 0.12), bodyMaterial);
+    body.position.set(0, 0, 0.02);
+    carGroup.add(body);
+
+    for (let windowIndex = 0; windowIndex < 3; windowIndex += 1) {
+      const win = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.2, 0.06), windowMaterial);
+      win.position.set(-1.72 + windowIndex * 1.72, 0.08, 0.12);
+      carGroup.add(win);
+    }
+
+    const coupler = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.18, 0.08), edgeMaterial);
+    coupler.position.set(direction < 0 ? 2.9 : -2.9, -0.02, 0.1);
+    carGroup.add(coupler);
+    train.add(carGroup);
+  }
+
+  return train;
+}
+
+function createGraffitiTexture(seed = 1) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "rgba(0,0,0,0)";
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const colors = [
+    "rgba(255, 210, 74, 0.16)",
+    "rgba(108, 243, 255, 0.12)",
+    "rgba(255, 74, 102, 0.12)",
+    "rgba(242, 135, 61, 0.16)",
+  ];
+  for (let index = 0; index < 10; index += 1) {
+    const x = (index * 41 + seed * 17) % 230;
+    const y = 20 + ((index * 29 + seed * 11) % 86);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = colors[(index + seed) % colors.length];
+    ctx.fillRect(x, y, 18 + (index % 4) * 14, 5 + (index % 3) * 5);
+    ctx.fillRect(x + 8, y + 9, 28 + (index % 5) * 10, 3 + (index % 2) * 4);
+  }
+  ctx.globalAlpha = 1;
+
+  return pixelTextureSettings(new THREE.CanvasTexture(canvas));
+}
+
+function createStreetlampGlowTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  const gradient = ctx.createRadialGradient(64, 34, 0, 64, 50, 64);
+  gradient.addColorStop(0, "rgba(255, 222, 126, 0.72)");
+  gradient.addColorStop(0.32, "rgba(255, 166, 74, 0.28)");
+  gradient.addColorStop(0.72, "rgba(255, 113, 42, 0.08)");
+  gradient.addColorStop(1, "rgba(255, 113, 42, 0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 128, 128);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  return texture;
+}
+
+function createAlleyWallPanel(index) {
+  const group = new THREE.Group();
+  const wallMaterial = new THREE.MeshBasicMaterial({
+    color: index % 2 ? 0x2b1b2b : 0x341d2c,
+    transparent: true,
+    opacity: 0.78,
+    depthWrite: false,
+  });
+  const wall = new THREE.Mesh(new THREE.PlaneGeometry(28, 15.5), wallMaterial);
+  wall.position.set(0, 2.2, 0);
+  group.add(wall);
+
+  const brickMaterial = new THREE.MeshBasicMaterial({
+    color: 0x5b2b31,
+    transparent: true,
+    opacity: 0.24,
+    depthWrite: false,
+  });
+  for (let row = 0; row < 5; row += 1) {
+    const brick = new THREE.Mesh(new THREE.BoxGeometry(28, 0.06, 0.04), brickMaterial);
+    brick.position.set(0, -4.8 + row * 1.45, 0.03);
+    group.add(brick);
+  }
+
+  const graffiti = new THREE.Mesh(
+    new THREE.PlaneGeometry(10.8, 5.4),
+    new THREE.MeshBasicMaterial({
+      map: createGraffitiTexture(index + 3),
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    }),
+  );
+  graffiti.position.set(-4 + (index % 3) * 4.3, 0.8 + (index % 2) * 1.2, 0.06);
+  group.add(graffiti);
+
+  const warmPatch = new THREE.Mesh(
+    new THREE.PlaneGeometry(9.4, 4.4),
+    new THREE.MeshBasicMaterial({
+      color: 0xb46031,
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false,
+    }),
+  );
+  warmPatch.position.set(5.5, 3.6, 0.04);
+  group.add(warmPatch);
+  return group;
+}
+
+function createElevatedTrackSection(index) {
+  const group = new THREE.Group();
+  const upperSpine = makeElevatedTrackSpine(13 + index * 2.7);
+  const lowerSpine = makeElevatedTrackSpine(31 + index * 3.4);
+  group.userData.trackSpines = [upperSpine, lowerSpine];
+
+  const iron = new THREE.MeshBasicMaterial({
+    color: 0x0a0e13,
+    transparent: true,
+    opacity: 0.94,
+    depthWrite: false,
+  });
+  const rust = new THREE.MeshBasicMaterial({
+    color: 0x5b2c19,
+    transparent: true,
+    opacity: 0.74,
+    depthWrite: false,
+  });
+
+  for (const spine of group.userData.trackSpines) {
+    for (let point = 0; point < spine.length - 1; point += 1) {
+      const start = spine[point];
+      const end = spine[point + 1];
+      addTrackSegment(group, start, end, iron, 0.11, 0.05);
+      addTrackSegment(
+        group,
+        scratchTrackA.copy(start).add(new THREE.Vector2(0, -0.42)),
+        scratchTrackB.copy(end).add(new THREE.Vector2(0, -0.42)),
+        iron,
+        0.1,
+        0.05,
+      );
+      addTrackSegment(
+        group,
+        scratchTrackA.copy(start).add(new THREE.Vector2(0, -0.9)),
+        scratchTrackB.copy(end).add(new THREE.Vector2(0, -0.9)),
+        rust,
+        0.055,
+        0.06,
+      );
+    }
+  }
+
+  for (let support = 0; support < 16; support += 1) {
+    const t = support / 15;
+    const point = getPointOnPolyline(support % 2 ? lowerSpine : upperSpine, t, scratchTrackA);
+    const x = point.x;
+    const topY = point.y - 0.65;
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.28, 8.4, 0.12), iron);
+    post.position.set(x, topY - 4.1, 0.01);
+    group.add(post);
+
+    const diagonalA = new THREE.Mesh(new THREE.BoxGeometry(6.0, 0.12, 0.1), rust);
+    diagonalA.position.set(x + 1.9, topY - 2.4, 0.03);
+    diagonalA.rotation.z = 0.78;
+    const diagonalB = diagonalA.clone();
+    diagonalB.position.x = x + 2.1;
+    diagonalB.rotation.z = -0.78;
+    group.add(diagonalA, diagonalB);
+  }
+
+  group.add(createElevatedTrain(0, -1));
+  group.add(createElevatedTrain(1, 1));
+
+  addSaggingWire(group, -config.elevatedTrackSpan * 0.48, config.elevatedTrackSpan * 0.48, 5.85, 5.55, 0.95, iron, 0.045, 0.04);
+  addSaggingWire(group, -config.elevatedTrackSpan * 0.42, config.elevatedTrackSpan * 0.42, 4.3, 4.0, 1.25, iron, 0.04, 0.04);
+  return group;
+}
+
+function createAlleyFloorSection(index) {
+  const group = new THREE.Group();
+  const pavement = new THREE.MeshBasicMaterial({
+    color: 0x21191d,
+    transparent: true,
+    opacity: 0.76,
+    depthWrite: false,
+  });
+  const reflection = new THREE.MeshBasicMaterial({
+    color: 0xffa24b,
+    transparent: true,
+    opacity: 0.2,
+    depthWrite: false,
+  });
+  const cyanReflection = new THREE.MeshBasicMaterial({
+    color: 0x6cf3ff,
+    transparent: true,
+    opacity: 0.1,
+    depthWrite: false,
+  });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(34, 6.5), pavement);
+  ground.position.set(0, -14.6, 0);
+  group.add(ground);
+
+  for (let index2 = 0; index2 < 9; index2 += 1) {
+    const puddle = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.2 + (index2 % 3) * 1.1, 0.18 + (index2 % 2) * 0.1),
+      index2 % 3 === 0 ? cyanReflection : reflection,
+    );
+    puddle.position.set(-14 + index2 * 3.7, -12.1 - (index2 % 4) * 0.72, 0.04);
+    puddle.rotation.z = (index2 % 2 ? -0.08 : 0.06);
+    group.add(puddle);
+  }
+
+  const leafMaterials = [
+    new THREE.MeshBasicMaterial({ color: 0xb95728, transparent: true, opacity: 0.72, depthWrite: false }),
+    new THREE.MeshBasicMaterial({ color: 0xd98a35, transparent: true, opacity: 0.72, depthWrite: false }),
+    new THREE.MeshBasicMaterial({ color: 0x7e3a21, transparent: true, opacity: 0.72, depthWrite: false }),
+  ];
+  for (let leaf = 0; leaf < 12; leaf += 1) {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.055), leafMaterials[(leaf + index) % leafMaterials.length]);
+    mesh.position.set(-16 + ((leaf * 17 + index * 7) % 320) / 10, -11.3 - ((leaf * 11 + index * 5) % 44) / 10, 0.08);
+    mesh.rotation.z = ((leaf * 13) % 90) * Math.PI / 180;
+    group.add(mesh);
+  }
+
+  const lamp = createStreetlampScene(index);
+  lamp.position.set(7.8 - (index % 3) * 5.2, -9.8, 0.1);
+  group.add(lamp);
+  return group;
+}
+
+function createStreetlampScene(index) {
+  const group = new THREE.Group();
+  const dark = new THREE.MeshBasicMaterial({
+    color: 0x050608,
+    transparent: true,
+    opacity: 0.94,
+    depthWrite: false,
+  });
+  const amber = new THREE.MeshBasicMaterial({
+    color: 0xffc45a,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+  });
+  const glow = new THREE.Mesh(
+    new THREE.PlaneGeometry(8.5, 8.5),
+    new THREE.MeshBasicMaterial({
+      map: createStreetlampGlowTexture(),
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  glow.position.set(0.75, 3.15, -0.02);
+  group.add(glow);
+
+  const pole = new THREE.Mesh(new THREE.BoxGeometry(0.16, 5.8, 0.08), dark);
+  pole.position.set(0, 0.2, 0);
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.08), dark);
+  arm.position.set(0.66, 3.05, 0.02);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.22, 0.08), amber);
+  head.position.set(1.45, 2.94, 0.04);
+  group.add(pole, arm, head);
+
+  const figureCount = index % 2 === 0 ? 2 : 1;
+  for (let figure = 0; figure < figureCount; figure += 1) {
+    const x = -0.72 + figure * 0.68;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.22, 1.05, 0.08), dark);
+    const headMesh = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.08), dark);
+    const legs = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.38, 0.08), dark);
+    body.position.set(x, -2.3, 0.05);
+    headMesh.position.set(x, -1.63, 0.05);
+    legs.position.set(x, -3.0, 0.05);
+    group.add(body, headMesh, legs);
+  }
   return group;
 }
 
@@ -1790,11 +2341,14 @@ function createForegroundBaseBlock(index) {
     new THREE.MeshBasicMaterial({
       color: 0x000000,
       transparent: true,
-      opacity: 0.96,
+      opacity: 1,
       depthWrite: false,
+      depthTest: false,
     }),
   );
   base.position.y = -height * 0.5;
+  base.scale.setScalar(config.foregroundBaseBlurScale);
+  base.userData.foregroundBlur = true;
   group.add(base);
 
   const trim = new THREE.Mesh(
@@ -1802,12 +2356,16 @@ function createForegroundBaseBlock(index) {
     new THREE.MeshBasicMaterial({
       color: 0x10151e,
       transparent: true,
-      opacity: 0.45,
+      opacity: 1,
       depthWrite: false,
+      depthTest: false,
     }),
   );
   trim.position.y = 0.1;
+  trim.scale.setScalar(config.foregroundBaseBlurScale);
+  trim.userData.foregroundBlur = true;
   group.add(trim);
+  capObjectHeightToScreen(group);
   return group;
 }
 
@@ -1882,8 +2440,13 @@ function buildParallaxCity() {
     "rgba(20, 17, 28, 0.64)",
     "rgba(255, 236, 196, 0.62)",
   );
-  for (let index = 0; index < 10; index += 1) {
+  for (let index = 0; index < 6; index += 1) {
     parallaxLayers.edgeHaze.add(createEdgeHazeBand(index), index * 13 - 58, 0);
+  }
+
+  for (let index = 0; index < 5; index += 1) {
+    const wall = createAlleyWallPanel(index);
+    parallaxLayers.alleyWall.add(wall, index * 22 - 44, -1.6 + (index % 2) * 0.4);
   }
 
   for (let index = 0; index < 9; index += 1) {
@@ -1968,19 +2531,29 @@ function buildParallaxCity() {
     parallaxLayers.nearSkyline.add(building, index * 6 - 50, -11.8);
   }
 
-  for (let index = 0; index < 12; index += 1) {
-    parallaxLayers.foregroundBase.add(createForegroundBaseBlock(index), index * 7.5 - 42, -12.6 + (index % 2) * 0.2);
+  parallaxLayers.elevatedTracks.add(createElevatedTrackSection(0), 0, 4.2);
+
+  for (let index = 0; index < 4; index += 1) {
+    parallaxLayers.alleyFloor.add(createAlleyFloorSection(index), index * 26 - 39, -1.1 + (index % 2) * 0.18);
   }
 
-  for (let index = 0; index < 12; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
+    const block = createForegroundBaseBlock(index);
+    applyForegroundRandomScaleAndBlur(block, index, 81);
+    parallaxLayers.foregroundBase.add(block, index * 17 - 34, -12.6 + (index % 2) * 0.2);
+  }
+
+  for (let index = 0; index < 5; index += 1) {
     const prop = createForegroundProp(index % 3 === 0 ? "billboard" : "poles");
     prop.userData.driftScale = 1;
-    parallaxLayers.foreground.add(prop, index * 8 - 38, -4.9 + (index % 4) * 0.28);
+    applyForegroundRandomScaleAndBlur(prop, index, 43);
+    parallaxLayers.foreground.add(prop, index * 17 - 34, -4.9 + (index % 4) * 0.28);
   }
 
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 3; index += 1) {
     const run = createPowerlineRun(index);
     run.scale.setScalar(seededRange(index + 52.4, 0.78, 1.08));
+    applyForegroundRandomScaleAndBlur(run, index, 126);
     parallaxLayers.foregroundPowerlines.add(
       run,
       index * 30 - 75 + seededRange(index + 61.8, -3.2, 3.8),
@@ -2005,6 +2578,25 @@ function updateParallaxCity(dt, now) {
       const pulse = 0.68 + Math.sin(now * 2.8 + object.userData.sign.userData.flickerSeed) * 0.18;
       object.userData.sign.material.opacity = THREE.MathUtils.clamp(pulse, 0.42, 0.9);
     }
+  }
+
+  const trainTimeScale = isSlowMotionActive() ? config.slowMotionForwardScale : 1;
+  for (const section of parallaxLayers.elevatedTracks.items) {
+    const spines = section.userData.trackSpines ?? [];
+    section.traverse((train) => {
+      if (!train.userData.isElevatedTrain) return;
+      const direction = train.userData.trainDirection || -1;
+      train.userData.trainT = ((train.userData.trainT ?? 0) + dt * trainTimeScale * train.userData.trainSpeed * direction + 1) % 1;
+      const spine = spines[direction < 0 ? 0 : 1] ?? spines[0];
+      if (!spine) return;
+      for (const car of train.children) {
+        const carT = (train.userData.trainT + (car.userData.carTOffset ?? 0) * direction + 1) % 1;
+        const point = getPointOnPolyline(spine, carT, scratchTrackA);
+        const tangent = getTangentOnPolyline(spine, carT, scratchTrackB);
+        car.position.set(point.x, point.y, 0.08);
+        car.rotation.z = Math.atan2(tangent.y, tangent.x) + (direction < 0 ? Math.PI : 0);
+      }
+    });
   }
 }
 
@@ -2033,6 +2625,7 @@ const glbCharacter = {
   pivots: {},
   pivotKeys: new Map(),
   pivotCalibration: new Map(),
+  restLocalTargets: new Map(),
   restQuaternions: new Map(),
   currentAngles: new Map(),
   debugMarkers: [],
@@ -2280,29 +2873,67 @@ function getGlbRopeAttachment() {
   );
 }
 
-function getGlbPivotCalibration(key) {
+function getGlbRestLocalTargetKey(key, child) {
+  return child ? `${key}:${child.uuid}` : `${key}:none`;
+}
+
+function cacheGlbRestLocalTargets() {
+  if (!glbCharacter.group) return;
+  glbCharacter.group.updateWorldMatrix(true, true);
+  glbCharacter.restLocalTargets.clear();
+
+  const targetPairs = [];
+  for (const key of Object.keys(glbPivotNames)) {
+    const child = getGlbPivotChild(key);
+    if (child) targetPairs.push([key, child]);
+  }
+  if (glbCharacter.leftWristAnchor) {
+    targetPairs.push(["leftElbow", glbCharacter.leftWristAnchor]);
+    targetPairs.push(["leftShoulder", glbCharacter.leftWristAnchor]);
+  }
+
+  for (const [key, child] of targetPairs) {
+    const pivot = glbCharacter.pivots[key];
+    if (!pivot || !child) continue;
+    const childLocal = glbPoseCalibrationVectorA.set(0, 0, 0);
+    child.getWorldPosition(childLocal);
+    pivot.worldToLocal(childLocal);
+    glbCharacter.restLocalTargets.set(getGlbRestLocalTargetKey(key, child), childLocal.clone());
+  }
+}
+
+function getGlbRestLocalTarget(key, child) {
+  if (!child) return null;
+  const cached = glbCharacter.restLocalTargets.get(getGlbRestLocalTargetKey(key, child));
+  if (cached) return cached;
+  return child.position ?? null;
+}
+
+function getGlbPivotCalibration(key, childOverride = null) {
   if (!key) return { restScreenAngle: 0, screenSign: 1, screenScale: 1 };
-  const cached = glbCharacter.pivotCalibration.get(key);
+  const calibrationKey = getGlbRestLocalTargetKey(key, childOverride);
+  const cached = glbCharacter.pivotCalibration.get(calibrationKey);
   if (cached) return cached;
 
   const pivot = glbCharacter.pivots[key];
-  const child = getGlbPivotChild(key);
+  const child = childOverride ?? getGlbPivotChild(key);
   const restQuaternion = glbCharacter.restQuaternions.get(pivot);
   const axis = getGlbPivotRotationAxis(key, restQuaternion);
+  const restLocalTarget = getGlbRestLocalTarget(key, child);
   const calibration = {
     restScreenAngle: 0,
     screenSign: 1,
     screenScale: 1,
   };
 
-  if (pivot && child && restQuaternion) {
-    const base = glbPoseCalibrationVectorA.copy(child.position).applyQuaternion(restQuaternion);
+  if (pivot && child && restQuaternion && restLocalTarget) {
+    const base = glbPoseCalibrationVectorA.copy(restLocalTarget).applyQuaternion(restQuaternion);
     if (base.x * base.x + base.y * base.y > 0.000001) {
       calibration.restScreenAngle = Math.atan2(base.y, base.x);
       const calibrationStep = 0.025;
       glbPoseRotationScratch.setFromAxisAngle(axis, calibrationStep);
       const rotated = glbPoseCalibrationVectorB
-        .copy(child.position)
+        .copy(restLocalTarget)
         .applyQuaternion(glbPoseRotationScratch)
         .applyQuaternion(restQuaternion);
       const delta = normalizeAngle(Math.atan2(rotated.y, rotated.x) - calibration.restScreenAngle);
@@ -2311,26 +2942,30 @@ function getGlbPivotCalibration(key) {
     }
   }
 
-  glbCharacter.pivotCalibration.set(key, calibration);
+  glbCharacter.pivotCalibration.set(calibrationKey, calibration);
   return calibration;
 }
 
 function getGlbRestScreenAngle(key, childPivot) {
   if (!childPivot) return -Math.PI / 2;
-  const calibration = getGlbPivotCalibration(key);
+  const calibration = getGlbPivotCalibration(key, childPivot);
   if (Number.isFinite(calibration.restScreenAngle)) return calibration.restScreenAngle;
   return localAngleTo(childPivot);
 }
 
-function setGlbPivotAngle(pivot, angle, immediate = false) {
+function setGlbPivotAngle(pivot, angle, immediate = false, calibrationChild = null) {
   if (!pivot) return;
   const target = normalizeAngle(angle);
   glbCharacter.currentAngles.set(pivot, target);
   const restQuaternion = glbCharacter.restQuaternions.get(pivot) ?? pivot.quaternion;
   const key = getGlbPivotKey(pivot);
   const axis = getGlbPivotRotationAxis(key, restQuaternion);
-  const calibration = getGlbPivotCalibration(key);
-  const localTarget = target / (calibration.screenSign || 1);
+  const calibration = getGlbPivotCalibration(key, calibrationChild);
+  const mirrorSign = playerAssetRoot.scale.x < 0 ? -1 : 1;
+  const response = Math.abs(calibration.screenScale) > 0.0001
+    ? calibration.screenScale
+    : (calibration.screenSign || 1);
+  const localTarget = target / (response * mirrorSign);
   glbPoseRotationScratch.setFromAxisAngle(axis, localTarget);
   glbPoseTargetScratch.copy(restQuaternion).multiply(glbPoseRotationScratch);
   if (immediate || glbPoseSmoothingAlpha >= 0.999) {
@@ -3120,11 +3755,25 @@ function getSwingPhaseLegPose({
   const split = hooked
     ? clampJoint(-swingFlow * 0.18 + ropeX * 0.07, -0.2, 0.2)
     : clampJoint(localVelocityX * 0.014 + fallAmount * 0.05 * localSpeedSign, -0.22, 0.22);
+  const leftFacingLeftMotion = hooked && state.facing < 0 && state.velocity.x < -0.35
+    ? THREE.MathUtils.smootherstep(
+      Math.min(1, Math.abs(state.velocity.x) / 18) * (0.45 + motion * 0.55),
+      0.06,
+      0.9,
+    ) * config.leftFacingLeftLegMotionScale
+    : 0;
 
   let leftHip = -0.06 + forwardTrail * 0.34 - preload * 0.22 - backswingTuck * 0.42 + split;
   let rightHip = -0.12 + forwardTrail * 0.26 - preload * 0.34 - backswingTuck * 0.54 - split * 0.75;
   let leftKnee = 0.04 + preload * 0.58 + backswingTuck * 0.82 + forwardTrail * 0.12;
   let rightKnee = -(0.04 + preload * 0.7 + backswingTuck * 0.94 + forwardTrail * 0.08);
+
+  if (leftFacingLeftMotion > 0) {
+    leftHip += leftFacingLeftMotion * 0.48;
+    rightHip += leftFacingLeftMotion * 0.36;
+    leftKnee += leftFacingLeftMotion * 0.58;
+    rightKnee -= leftFacingLeftMotion * 0.46;
+  }
 
   if (dangle > 0) {
     leftHip = THREE.MathUtils.lerp(leftHip, 0.02 + split * 0.35, dangle);
@@ -3153,8 +3802,8 @@ function getSwingPhaseLegPose({
   }
 
   const windFootClockwise = getWindDrivenFootClockwise(tuck);
-  leftAnkle -= windFootClockwise;
-  rightAnkle -= windFootClockwise;
+  leftAnkle -= windFootClockwise + leftFacingLeftMotion * 0.22;
+  rightAnkle -= windFootClockwise + leftFacingLeftMotion * 0.18;
 
   return {
     leftHip: clampAngle(leftHip, glbJointLimits.hip),
@@ -4175,6 +4824,7 @@ function loadGlbCharacter() {
       glbCharacter.centerMassNode = null;
       glbCharacter.centerMassOffset.set(0, 0, 0);
       glbCharacter.debugMarkers = [];
+      glbCharacter.restLocalTargets = new Map();
       glbCharacter.restQuaternions = new Map();
       glbCharacter.currentAngles = new Map();
       glbCharacter.skinnedMeshCount = 0;
@@ -4216,6 +4866,7 @@ function loadGlbCharacter() {
         anchor.add(marker);
         glbCharacter.debugMarkers.push(marker);
       }
+      cacheGlbRestLocalTargets();
       playerAssetRoot.clear();
       playerAssetRoot.add(model);
       glbCharacter.loaded = true;
@@ -6927,6 +7578,7 @@ function reset({ resetLevelStats = false } = {}) {
   state.gameOver = false;
   state.finished = false;
   state.levelCompleteShown = false;
+  state.pendingLeaderboardEntry = null;
   state.restartAt = 0;
   state.spaceDownAt = -100;
   state.spaceIsDown = false;
@@ -6953,6 +7605,7 @@ function reset({ resetLevelStats = false } = {}) {
   resetRibbonPhysics();
   resetJeremyFireworks();
   levelCompletePanel.classList.add("hidden");
+  leaderboardEntryEl?.classList.add("hidden");
   anchors.forEach((anchor) => {
     anchor.used = false;
     anchor.visualOffset.set(0, 0, 0);
@@ -7054,6 +7707,44 @@ function setIconButtonLabel(button, label, iconName = null) {
   refreshLucideIcons();
 }
 
+function setupPanelToggle(panel, label) {
+  if (!panel || panel.querySelector(":scope > .panel-toggle")) return;
+
+  panel.classList.add("collapsible-panel");
+  const collapsedLabel = document.createElement("span");
+  collapsedLabel.className = "panel-collapsed-label";
+  collapsedLabel.textContent = label;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "panel-toggle";
+  button.setAttribute("aria-label", `Minimize ${label}`);
+  button.setAttribute("title", `Minimize ${label}`);
+  button.innerHTML = `<span data-lucide="minimize-2" aria-hidden="true"></span>`;
+  button.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const collapsed = !panel.classList.contains("panel-collapsed");
+    panel.classList.toggle("panel-collapsed", collapsed);
+    button.setAttribute("aria-label", `${collapsed ? "Maximize" : "Minimize"} ${label}`);
+    button.setAttribute("title", `${collapsed ? "Maximize" : "Minimize"} ${label}`);
+    button.innerHTML = `<span data-lucide="${collapsed ? "maximize-2" : "minimize-2"}" aria-hidden="true"></span>`;
+    refreshLucideIcons();
+  });
+  panel.append(collapsedLabel, button);
+}
+
+function setupMajorPanelToggles() {
+  setupPanelToggle(document.querySelector("#hud"), "HUD");
+  setupPanelToggle(document.querySelector("#controls"), "controls");
+  setupPanelToggle(gameZoomInput?.closest("#game-zoom-panel"), "zoom");
+  setupPanelToggle(editorPanel, "build tools");
+  refreshLucideIcons();
+}
+
 function decorateControls() {
   const buttons = [
     [togglePauseButton, state.paused ? "Play" : "Pause", state.paused ? "play" : "pause"],
@@ -7149,6 +7840,118 @@ function getScoreRank(score, deaths) {
   return "D";
 }
 
+function normalizeLeaderboardInitials(value) {
+  const letters = String(value ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 3);
+  return letters.padEnd(3, "A");
+}
+
+function normalizeLeaderboardEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const score = Number(entry.score);
+  if (!Number.isFinite(score)) return null;
+  return {
+    initials: normalizeLeaderboardInitials(entry.initials),
+    score: Math.max(0, Math.floor(score)),
+    fastestSpeed: Math.max(0, Math.round(Number(entry.fastestSpeed) || 0)),
+    flips: Math.max(0, Math.floor(Number(entry.flips) || 0)),
+    deaths: Math.max(0, Math.floor(Number(entry.deaths) || 0)),
+    rank: String(entry.rank || getScoreRank(score, Number(entry.deaths) || 0)).slice(0, 2),
+    completedAt: typeof entry.completedAt === "string" ? entry.completedAt : new Date().toISOString(),
+  };
+}
+
+function sortLeaderboard(entries) {
+  return [...entries]
+    .map(normalizeLeaderboardEntry)
+    .filter(Boolean)
+    .sort((a, b) =>
+      b.score - a.score ||
+      b.fastestSpeed - a.fastestSpeed ||
+      b.flips - a.flips ||
+      a.deaths - b.deaths ||
+      a.completedAt.localeCompare(b.completedAt),
+    )
+    .slice(0, leaderboardMaxEntries);
+}
+
+function loadLeaderboard() {
+  try {
+    return sortLeaderboard(JSON.parse(localStorage.getItem(leaderboardStorageKey)) ?? []);
+  } catch {
+    localStorage.removeItem(leaderboardStorageKey);
+    return [];
+  }
+}
+
+function saveLeaderboard(entries) {
+  const normalized = sortLeaderboard(entries);
+  localStorage.setItem(leaderboardStorageKey, JSON.stringify(normalized));
+  return normalized;
+}
+
+function createLeaderboardRunEntry(initials = "AAA") {
+  return normalizeLeaderboardEntry({
+    initials,
+    score: state.score,
+    fastestSpeed: state.fastestSpeed,
+    flips: state.completedFlips,
+    deaths: state.deaths,
+    rank: getScoreRank(state.score, state.deaths),
+    completedAt: new Date().toISOString(),
+  });
+}
+
+function getLeaderboardInsertIndex(entry, entries = loadLeaderboard()) {
+  const sorted = sortLeaderboard([...entries, entry]);
+  return sorted.findIndex((item) => item.completedAt === entry.completedAt);
+}
+
+function qualifiesForLeaderboard(entry, entries = loadLeaderboard()) {
+  if (!entry) return false;
+  if (entries.length < leaderboardMaxEntries) return true;
+  return getLeaderboardInsertIndex(entry, entries) >= 0;
+}
+
+function renderLeaderboard(entries = loadLeaderboard()) {
+  if (!leaderboardListEl) return;
+  leaderboardListEl.replaceChildren();
+  const sorted = sortLeaderboard(entries);
+  if (!sorted.length) {
+    const empty = document.createElement("li");
+    empty.className = "leaderboard-empty";
+    empty.textContent = "No scores yet";
+    leaderboardListEl.append(empty);
+    return;
+  }
+
+  for (const entry of sorted) {
+    const item = document.createElement("li");
+    const initials = document.createElement("span");
+    const score = document.createElement("strong");
+    const details = document.createElement("small");
+    initials.textContent = entry.initials;
+    score.textContent = String(entry.score);
+    details.textContent = `${entry.fastestSpeed} speed / ${entry.flips} flips / ${entry.deaths} deaths`;
+    item.append(initials, score, details);
+    leaderboardListEl.append(item);
+  }
+}
+
+function submitLeaderboardEntry() {
+  if (!state.pendingLeaderboardEntry) return;
+  const entry = {
+    ...state.pendingLeaderboardEntry,
+    initials: normalizeLeaderboardInitials(leaderboardInitialsInput?.value),
+  };
+  const leaderboard = saveLeaderboard([...loadLeaderboard(), entry]);
+  state.pendingLeaderboardEntry = null;
+  leaderboardEntryEl?.classList.add("hidden");
+  renderLeaderboard(leaderboard);
+}
+
 function showLevelComplete() {
   if (state.levelCompleteShown) return;
 
@@ -7158,6 +7961,24 @@ function showLevelComplete() {
   completeFlipsEl.textContent = String(state.completedFlips);
   completeScoreEl.textContent = String(state.score);
   completeRankEl.textContent = getScoreRank(state.score, state.deaths);
+  const runEntry = createLeaderboardRunEntry();
+  const leaderboard = loadLeaderboard();
+  state.pendingLeaderboardEntry = qualifiesForLeaderboard(runEntry, leaderboard) ? runEntry : null;
+  if (state.pendingLeaderboardEntry && leaderboardEntryEl && leaderboardInitialsInput) {
+    leaderboardEntryEl.classList.remove("hidden");
+    leaderboardInitialsInput.value = state.pendingLeaderboardEntry.initials;
+    window.setTimeout(() => {
+      leaderboardInitialsInput.focus();
+      leaderboardInitialsInput.select();
+    }, 80);
+  } else {
+    leaderboardEntryEl?.classList.add("hidden");
+  }
+  renderLeaderboard(
+    state.pendingLeaderboardEntry
+      ? sortLeaderboard([...leaderboard, state.pendingLeaderboardEntry])
+      : leaderboard,
+  );
   levelCompletePanel.classList.remove("hidden");
   launchJeremyFireworks(performance.now() / 1000, true);
   window.setTimeout(() => launchJeremyFireworks(performance.now() / 1000, true), 180);
@@ -7534,11 +8355,60 @@ function setFacingTowardX(targetX, deadZone = 0.28) {
   if (Math.abs(dx) > deadZone) state.facing = dx >= 0 ? 1 : -1;
 }
 
+function alignLeftFacingCatchToGrappleAxis(anchor) {
+  if (!anchor || state.facing >= 0 || !glbCharacter.loaded) return;
+
+  const shoulder = glbCharacter.pivots.leftShoulder;
+  const wrist = getGlbRopeAttachment();
+  if (!shoulder || !wrist) return;
+
+  playerMesh.position.copy(state.player);
+  syncGlbCharacterTransform(state.facing, playerAssetRoot.rotation.z, playerAssetRoot.rotation.y);
+  if (!config.freezeGlbCharacterPose) {
+    poseGlbCharacterFromPhysics(performance.now() / 1000, config.physicsStep);
+  }
+  playerMesh.updateWorldMatrix(true, true);
+  playerAssetRoot.updateWorldMatrix(true, true);
+
+  const anchorPoint = getVisualGrapplePoint(anchor, characterScratchA);
+  shoulder.getWorldPosition(characterScratchB);
+  wrist.getWorldPosition(characterScratchC);
+
+  const armDx = characterScratchC.x - characterScratchB.x;
+  const armDy = characterScratchC.y - characterScratchB.y;
+  const armLength = Math.hypot(armDx, armDy);
+  if (armLength < 0.0001) return;
+
+  const normalX = -armDy / armLength;
+  const normalY = armDx / armLength;
+  const signedError = (anchorPoint.x - characterScratchB.x) * normalX
+    + (anchorPoint.y - characterScratchB.y) * normalY;
+  if (Math.abs(signedError) < config.leftCatchAlignmentMinError) return;
+
+  const slide = THREE.MathUtils.clamp(
+    signedError,
+    -config.leftCatchAlignmentMaxSlide,
+    config.leftCatchAlignmentMaxSlide,
+  );
+  const slideX = normalX * slide;
+  const slideY = normalY * slide;
+
+  state.player.x += slideX;
+  state.player.y += slideY;
+  state.previousPlayer.x += slideX;
+  state.previousPlayer.y += slideY;
+  playerMesh.position.copy(state.player);
+  playerMesh.updateWorldMatrix(true, true);
+}
+
 function attachAnchor(anchor) {
-  sfx.play("hookCatch", Math.hypot(state.velocity.x, state.velocity.y));
+  const catchSpeed = Math.hypot(state.velocity.x, state.velocity.y);
+  sfx.play("hookCatch", catchSpeed);
+  sfx.play("anchorNote", anchor?.index ?? 0, catchSpeed);
   state.anchor = anchor;
   state.grappled = true;
   setFacingTowardX(anchor.position.x);
+  alignLeftFacingCatchToGrappleAxis(anchor);
   state.hookWrapPulse = 1;
   state.ropeLength = Math.max(
     config.minRopeLength,
@@ -7554,8 +8424,8 @@ function attachAnchor(anchor) {
   state.stuntTopOverArmed = false;
   state.stuntBoostArmed = false;
   state.stuntBurstClockArmed = false;
-  const catchSpeed = Math.max(0, -state.velocity.y);
-  const catchDip = THREE.MathUtils.clamp((catchSpeed - 1.5) * 0.0385, 0.035, 0.385);
+  const verticalCatchSpeed = Math.max(0, -state.velocity.y);
+  const catchDip = THREE.MathUtils.clamp((verticalCatchSpeed - 1.5) * 0.0385, 0.035, 0.385);
   anchor.impactOffset.set(
     THREE.MathUtils.clamp(state.velocity.x * 0.015, -0.18, 0.18),
     -catchDip,
@@ -7729,10 +8599,11 @@ function flourish(now) {
   state.flourishDuration = state.flourishSpinRemaining;
   state.flourishFlipDirection = state.velocity.x >= 0 ? 1 : -1;
   state.flourishCompletionArmed = true;
+  const baseTrickScore = twirl ? 7 : 5;
   if (isSlowMotionActive()) {
-    addScore(twirl ? 11 : 9, twirl ? "slow-twirl" : "slow-flourish", now);
+    addScore(baseTrickScore * 3, twirl ? "slow-twirl" : "slow-flourish", now);
   } else {
-    addScore(twirl ? 7 : 5, twirl ? "twirl" : "flourish", now);
+    addScore(baseTrickScore, twirl ? "twirl" : "flourish", now);
   }
 }
 
@@ -9542,7 +10413,19 @@ bindGameButton(sfxMuteButton, () => setSfxMuted(!sfx.settings.sfxMuted));
 if (sfxVolumeInput) {
   sfxVolumeInput.addEventListener("input", () => setSfxVolume(sfxVolumeInput.value));
 }
+if (leaderboardInitialsInput) {
+  leaderboardInitialsInput.addEventListener("input", () => {
+    leaderboardInitialsInput.value = normalizeLeaderboardInitials(leaderboardInitialsInput.value).trimEnd();
+  });
+  leaderboardInitialsInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    submitLeaderboardEntry();
+  });
+}
+bindGameButton(leaderboardSaveButton, submitLeaderboardEntry);
 bindGameButton(nextLevelButton, () => reset({ resetLevelStats: true }));
+setupMajorPanelToggles();
 
 resize();
 sfx.loadSettings();
