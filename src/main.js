@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-125";
+import { createCharacterController } from "./characterController.js?v=version-0-5-126";
 
-const GAME_VERSION = "v0.5.125";
+const GAME_VERSION = "v0.5.126";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -214,6 +214,7 @@ const config = {
   foregroundBlurScale: 1.85,
   foregroundBaseBlurScale: 1.6,
   foregroundPowerlineBlurScale: 1.8,
+  foregroundDofBlur: 0.72,
   foregroundMaxScreenHeightRatio: 0.5,
   elevatedTrainSpeed: 18,
   elevatedTrainWrapWidth: 142,
@@ -1562,14 +1563,13 @@ void main() {
   if (color.a > 0.0001) {
     color.rgb /= color.a;
   }
-  color.a *= clamp(max(uBlurAmount, uPixelAmount) * 1.2, 0.0, 0.86);
   gl_FragColor = color;
 }
 `,
     transparent: true,
     depthWrite: false,
     depthTest: false,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.NormalBlending,
   });
 }
 
@@ -1616,7 +1616,10 @@ function getLayerCompositeQuad(layerKey) {
 }
 
 function hasActiveLayerEffects() {
-  return Object.values(sceneLayers).some((layer) => (layer.blurAmount ?? 0) > 0.001 || (layer.pixelAmount ?? 0) > 0.001);
+  return Object.entries(sceneLayers).some(([layerKey, layer]) => {
+    if (layerKey === "foreground" && layer.group.visible && config.foregroundDofBlur > 0.001) return true;
+    return (layer.blurAmount ?? 0) > 0.001 || (layer.pixelAmount ?? 0) > 0.001;
+  });
 }
 
 function renderSceneWithLayerEffects() {
@@ -1625,25 +1628,38 @@ function renderSceneWithLayerEffects() {
   ensureLayerCompositeTargets(width, height);
 
   const layerEntries = Object.entries(sceneLayers);
-  const activeLayerEntries = layerEntries.filter(([, layer]) => (
-    Boolean(layer.group.visible) && ((layer.blurAmount ?? 0) > 0.001 || (layer.pixelAmount ?? 0) > 0.001)
-  ));
+  const activeLayerEntries = layerEntries
+    .map(([layerKey, layer]) => {
+      const blurAmount = layerKey === "foreground"
+        ? Math.max(layer.blurAmount ?? 0, config.foregroundDofBlur)
+        : (layer.blurAmount ?? 0);
+      const pixelAmount = layer.pixelAmount ?? 0;
+      return [layerKey, layer, blurAmount, pixelAmount];
+    })
+    .filter(([, layer, blurAmount, pixelAmount]) => (
+      Boolean(layer.group.visible) && (blurAmount > 0.001 || pixelAmount > 0.001)
+    ));
   const previousClearColor = renderer.getClearColor(new THREE.Color());
   const previousClearAlpha = renderer.getClearAlpha();
   const previousAutoClear = renderer.autoClear;
+  const previousLayerVisibility = new Map(layerEntries.map(([layerKey, layer]) => [layerKey, layer.group.visible]));
+
+  for (const [, layer] of activeLayerEntries) layer.group.visible = false;
 
   renderer.setRenderTarget(null);
   renderer.setClearColor(0x21172c, 1);
   renderer.autoClear = true;
   renderer.render(scene, camera);
 
+  for (const [layerKey, layer] of layerEntries) {
+    layer.group.visible = Boolean(previousLayerVisibility.get(layerKey));
+  }
+
   if (!activeLayerEntries.length) {
     renderer.setClearColor(previousClearColor, previousClearAlpha);
     renderer.autoClear = previousAutoClear;
     return;
   }
-
-  const previousLayerVisibility = new Map(layerEntries.map(([layerKey, layer]) => [layerKey, layer.group.visible]));
 
   renderer.autoClear = true;
   renderer.setClearColor(0x000000, 0);
@@ -1658,12 +1674,12 @@ function renderSceneWithLayerEffects() {
     layer.group.visible = false;
   }
 
-  for (const [layerKey, layer] of activeLayerEntries) {
+  for (const [layerKey, layer, blurAmount, pixelAmount] of activeLayerEntries) {
     const quad = getLayerCompositeQuad(layerKey);
     quad.visible = true;
     quad.material.uniforms.tDiffuse.value = getLayerCompositeTarget(layerKey).texture;
-    quad.material.uniforms.uBlurAmount.value = layer.blurAmount ?? 0;
-    quad.material.uniforms.uPixelAmount.value = layer.pixelAmount ?? 0;
+    quad.material.uniforms.uBlurAmount.value = blurAmount;
+    quad.material.uniforms.uPixelAmount.value = pixelAmount;
   }
   for (const [layerKey, layer] of layerEntries) {
     layer.group.visible = Boolean(previousLayerVisibility.get(layerKey));
@@ -9668,9 +9684,11 @@ function updateStuntBoost(normal, dt = config.physicsStep) {
   } else {
     state.pullSwingRotation = Math.max(0, state.pullSwingRotation + angleDelta * 0.45);
   }
-  state.pullPhaseTarget = state.facing > 0 && state.pullSwingDirection > 0.0005 && state.pullSwingRotation >= THREE.MathUtils.degToRad(300)
-    ? 1
-    : 0;
+  const angleDegrees = (THREE.MathUtils.radToDeg(angle) + 360) % 360;
+  const isForwardPullArc = angleDegrees >= 250 && angleDegrees <= 340;
+  const isScreenRightSwing = state.facing > 0 && state.velocity.x > -1.2 && normal.x > 0.08;
+  const isBelowAnchor = normal.y < 0.25;
+  state.pullPhaseTarget = isScreenRightSwing && isBelowAnchor && isForwardPullArc ? 1 : 0;
 
   const speed = Math.hypot(state.velocity.x, state.velocity.y);
   const isTopOver =
