@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-129";
+import { createCharacterController } from "./characterController.js?v=version-0-5-130";
 
-const GAME_VERSION = "v0.5.129";
+const GAME_VERSION = "v0.5.130";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -1065,8 +1065,8 @@ function capObjectHeightToScreen(object, maxHeight = getForegroundMaxWorldHeight
   if (!Number.isFinite(height) || height <= maxHeight || height <= 0) return 1;
   const scale = maxHeight / height;
   object.scale.y *= scale;
-  object.userData.screenHeightCap = scale;
-  return scale;
+  object.userData.screenHeightCap = (object.userData.screenHeightCap ?? 1) * scale;
+  return object.userData.screenHeightCap;
 }
 
 function applyForegroundRandomScaleAndBlur(object, index, seed = 0) {
@@ -1153,9 +1153,6 @@ class ParallaxLayer {
       object.position.x =
         cameraX + wrapCentered(object.userData.baseX - cameraX * this.speedMultiplier - drift, this.wrapWidth);
       object.position.y = object.userData.baseY + cameraY * this.verticalMultiplier;
-      if (this.layerName === "foregroundLayer") {
-        capObjectHeightToScreen(object);
-      }
     }
   }
 }
