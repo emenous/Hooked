@@ -1,8 +1,8 @@
 import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
 import { GLTFLoader } from "https://unpkg.com/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
-import { createCharacterController } from "./characterController.js?v=version-0-5-130";
+import { createCharacterController } from "./characterController.js?v=version-0-5-131";
 
-const GAME_VERSION = "v0.5.130";
+const GAME_VERSION = "v0.5.131";
 const handledKeyDownEvents = new WeakSet();
 const handledKeyUpEvents = new WeakSet();
 
@@ -5952,7 +5952,7 @@ for (let index = 0; index < config.crashExplosionPieces; index += 1) {
 }
 
 const jeremyFireworks = [];
-const fireworkColors = ["#e4f24b", "#ff9f36", "#23e7ff", "#ff3d8f", "#f7fff8"];
+const fireworkColors = ["#ff251b", "#ff551f", "#ff8a1c", "#ffc72c", "#fff06a"];
 let nextJeremyParticle = 0;
 let nextJeremyBurstAt = 0;
 if (gameVersionEl) gameVersionEl.textContent = GAME_VERSION;
@@ -8779,6 +8779,13 @@ function normalizeLeaderboardInitials(value) {
   return letters.padEnd(3, "A");
 }
 
+function sanitizeLeaderboardInitialsInput(value) {
+  return String(value ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 3);
+}
+
 function normalizeLeaderboardEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
   const score = Number(entry.score);
@@ -8930,7 +8937,7 @@ function qualifiesForLeaderboard(entry, entries = loadLeaderboard()) {
 function renderLeaderboard(entries = loadLeaderboard()) {
   if (!leaderboardListEl) return;
   leaderboardListEl.replaceChildren();
-  const sorted = sortLeaderboard(entries);
+  const sorted = sortLeaderboard(entries).slice(0, leaderboardMaxEntries);
   if (!sorted.length) {
     const empty = document.createElement("li");
     empty.className = "leaderboard-empty";
@@ -8950,6 +8957,89 @@ function renderLeaderboard(entries = loadLeaderboard()) {
     item.append(initials, score, details);
     leaderboardListEl.append(item);
   }
+}
+
+function isLeaderboardEntryActive() {
+  return Boolean(
+    levelCompletePanel &&
+    !levelCompletePanel.classList.contains("hidden") &&
+    leaderboardEntryEl &&
+    !leaderboardEntryEl.classList.contains("hidden") &&
+    leaderboardInitialsInput,
+  );
+}
+
+function focusLeaderboardInitials({ select = false } = {}) {
+  if (!isLeaderboardEntryActive()) return;
+  leaderboardInitialsInput.focus({ preventScroll: true });
+  if (select) {
+    leaderboardInitialsInput.select();
+  }
+}
+
+function setLeaderboardInitialsSelection(position) {
+  if (!leaderboardInitialsInput?.setSelectionRange) return;
+  try {
+    leaderboardInitialsInput.setSelectionRange(position, position);
+  } catch {
+    // Some mobile keyboards do not expose selection while focus is changing.
+  }
+}
+
+function editLeaderboardInitials(key) {
+  if (!leaderboardInitialsInput) return;
+  const current = String(leaderboardInitialsInput.value ?? "");
+  const start = leaderboardInitialsInput.selectionStart ?? current.length;
+  const end = leaderboardInitialsInput.selectionEnd ?? start;
+  let next = current;
+  let selection = start;
+
+  if (key === "Backspace") {
+    if (start !== end) {
+      next = `${current.slice(0, start)}${current.slice(end)}`;
+    } else if (start > 0) {
+      next = `${current.slice(0, start - 1)}${current.slice(start)}`;
+      selection = start - 1;
+    }
+  } else if (key === "Delete") {
+    if (start !== end) {
+      next = `${current.slice(0, start)}${current.slice(end)}`;
+    } else {
+      next = `${current.slice(0, start)}${current.slice(start + 1)}`;
+    }
+  } else {
+    next = `${current.slice(0, start)}${key}${current.slice(end)}`;
+    selection = start + 1;
+  }
+
+  leaderboardInitialsInput.value = sanitizeLeaderboardInitialsInput(next);
+  setLeaderboardInitialsSelection(Math.min(selection, leaderboardInitialsInput.value.length));
+}
+
+function handleLeaderboardInitialsKey(event) {
+  if (!isLeaderboardEntryActive()) return false;
+  const key = String(event.key ?? "");
+  const canEditInitials =
+    key === "Backspace" ||
+    key === "Delete" ||
+    /^[a-zA-Z0-9]$/.test(key);
+
+  if (key === "Enter") {
+    event.preventDefault();
+    event.stopPropagation();
+    submitLeaderboardEntry();
+    return true;
+  }
+
+  if (!canEditInitials) {
+    return document.activeElement === leaderboardInitialsInput;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  focusLeaderboardInitials();
+  editLeaderboardInitials(key);
+  return true;
 }
 
 function submitLeaderboardEntry() {
@@ -8979,10 +9069,8 @@ function showLevelComplete() {
   if (state.pendingLeaderboardEntry && leaderboardEntryEl && leaderboardInitialsInput) {
     leaderboardEntryEl.classList.remove("hidden");
     leaderboardInitialsInput.value = state.pendingLeaderboardEntry.initials;
-    window.setTimeout(() => {
-      leaderboardInitialsInput.focus();
-      leaderboardInitialsInput.select();
-    }, 80);
+    window.setTimeout(() => focusLeaderboardInitials({ select: true }), 0);
+    window.setTimeout(() => focusLeaderboardInitials({ select: true }), 120);
   } else {
     leaderboardEntryEl?.classList.add("hidden");
   }
@@ -11359,6 +11447,7 @@ function getGameplayKeyAction(event) {
 function handleGameKeyDown(event) {
   if (handledKeyDownEvents.has(event)) return;
   handledKeyDownEvents.add(event);
+  if (handleLeaderboardInitialsKey(event)) return;
   if (isEditableKeyTarget(event.target)) return;
   if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") {
     if (state.animatorMode && state.paused) {
@@ -11470,12 +11559,14 @@ if (sfxVolumeInput) {
 if (leaderboardInitialsInput) {
   leaderboardInitialsInput.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
+    focusLeaderboardInitials();
   });
   leaderboardInitialsInput.addEventListener("click", (event) => {
     event.stopPropagation();
+    focusLeaderboardInitials();
   });
   leaderboardInitialsInput.addEventListener("input", () => {
-    leaderboardInitialsInput.value = normalizeLeaderboardInitials(leaderboardInitialsInput.value).trimEnd();
+    leaderboardInitialsInput.value = sanitizeLeaderboardInitialsInput(leaderboardInitialsInput.value);
   });
   leaderboardInitialsInput.addEventListener("keydown", (event) => {
     event.stopPropagation();
